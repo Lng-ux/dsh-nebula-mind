@@ -1,6 +1,6 @@
 {
   "name": "dsh-nebula-mind",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "private": false,
   "type": "module",
   "main": "lib/host.js",
@@ -46,7 +46,8 @@
     "node": ">=20"
   },
   "scripts": {
-    "check": "node --check lib/host.js"
+    "check": "node --check lib/host.js",
+    "doctor": "python python/doctor.py"
   },
   "repository": {
     "type": "git",

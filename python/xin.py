@@ -314,7 +314,7 @@ def tokenize(s):
     return en + zh + bigrams
 
 
-EMBED_PY = r"D:\indextts\.venv\Scripts\python.exe"
+EMBED_PY = os.environ.get("NEBULA_EMBED_PYTHON") or r"D:\indextts\.venv\Scripts\python.exe"
 EMBED_SH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embed.py")
 VEC_JSON = os.path.join(ROOT, "vectors.json")
 

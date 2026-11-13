@@ -94,6 +94,34 @@ set NEBULA_HOME=E:\nebula          # 换根目录，数据在 E:\nebula\memory
 
 ---
 
+## 三步跑起来
+
+```bash
+# 1) 装（装完彻底退出 DSH 再重开）
+dsh plugin --profile desktop add dsh-nebula-mind
+
+# 2) 记下第一条（它同时会把这条算进向量索引）
+python python/xin.py add "今天他提到周五要交画册"
+
+# 3) 自检：哪几路检索开着、差什么、下一步干什么
+python python/doctor.py
+```
+
+`doctor.py` 会逐项报告，并明确告诉你「缺了也能用」的部分。典型输出：
+
+```
+✅ Python       3.14.6
+✅ 数据目录可写      ~/.dsh/nebula-mind/memory（2 本账）
+✅ 记忆           事实 20 / 画像 4
+⚠️ 语义检索         没有 torch/transformers（ModuleNotFoundError）
+     ↳ 缺它也能用：关键词 / 图扩散 / 情绪共振照常
+✅ 心情联动         ~/.dsh/feiyu-mood/state.json
+✅ 星图生成         nebula-doctor.html（47 KB）
+结论：5 项可用，1 项降级，0 项不可用
+```
+
+**没有 torch 也能用**：四路召回里只少「语义向量」这一路，另外三路（关键词、图扩散、情绪共振）照样跑；装了 torch 再跑一次 `python python/embed.py --build` 就有了。
+
 ## 记忆是怎么长出来的
 
 | 账本 | 内容 | 谁写 |

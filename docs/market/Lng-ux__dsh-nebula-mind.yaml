@@ -1,0 +1,7 @@
+url: https://github.com/Lng-ux/dsh-nebula-mind
+name: Lng-ux/dsh-nebula-mind
+category: memory
+description:
+  en: Cross-session memory for DeepSeek Harness — four-way recall (keyword, vector, graph, mood), a forgetting that sinks memories deeper instead of deleting them, and a galaxy view where every edge explains why it exists.
+  zh: 给 DeepSeek Harness 用的跨会话长期记忆：四路召回（关键词 / 语义 / 图扩散 / 情绪），遗忘即沉海而非删除，再画成一片每一条连线都说得出理由的星系。
+icon: https://raw.githubusercontent.com/Lng-ux/dsh-nebula-mind/main/docs/shots/starmap.png

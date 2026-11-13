@@ -22,10 +22,8 @@ import re
 import sys
 import time
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import paths as _P  # noqa: E402
-ROOT = os.path.dirname(os.path.abspath(__file__))
-MIND = _P.MIND
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MIND = os.path.join(ROOT, "心事本")
 
 STOP = set("""的 了 就 也 都 还 和 跟 与 及 或 但 而 是 在 有 没 不 很 太 又 再 才 已经 一下 一个 一条 这个 那个
 我们 你们 他们 自己 什么 怎么 因为 所以 如果 但是 然后 之后 之前 现在 今天 明天 昨天 时候 一点
@@ -288,7 +286,7 @@ body.embed{overflow:hidden}
   <div>遗忘推演：往后拖 <b id="daylab">0</b> 天
     <input id="days" type="range" min="0" max="365" value="0" step="1"></div>
   <div style="margin-top:6px">
-    视野：<button id="b0" class="on">全部</button><button id="b1">一度关联</button><button id="b2">二度关联</button><button id="bT">文字：开</button><button id="bL" class="on">线条：开</button>
+    视野：<button id="b0" class="on">全部</button><button id="b1">一度关联</button><button id="b2">二度关联</button><button id="bMode">星河</button><button id="bT">文字：开</button><button id="bL" class="on">线条：开</button>
   </div>
   <div id="legend">内圈稳定 · 中圈待办 · 外圈归档 · 金色＝恒星（永不遗忘）</div>
   <div id="keys"><b>V</b> 竖屏 9:16　<b>T</b> 文字开关　<b>H</b> 隐藏界面　<b>滚轮</b> 缩放　<b>中键</b> 复位　<b>点星</b> 只看它那条星座</div>
@@ -542,7 +540,14 @@ addEventListener('mousemove',e=>{
     rx = Math.max(-1.2, Math.min(1.2, rx)); lx=e.clientX; ly=e.clientY; }
   mx=e.clientX; my=e.clientY;
 });
-cv.addEventListener('click',()=>{ const n=pick(); focus = (n && n.id!==focus) ? n.id : null;
+cv.addEventListener('click',()=>{
+  if(MODE === 'river'){
+    let hit = null, best = 1e9;
+    for(const h of RIVER_HIT){ const d=(mx-h.x)**2+(my-h.y)**2; if(d < h.r*h.r && d < best){ best = d; hit = h; } }
+    focus = hit ? (hit.id !== focus ? hit.id : null) : null;
+    computeHeat(); showPanel(byId[focus] || null); return;
+  }
+  const n=pick(); focus = (n && n.id!==focus) ? n.id : null;
   if(focus && hop===0) setMode(1); if(!focus) setMode(0); computeHeat(); showPanel(byId[focus]||null); });
 
 let zoom = 1, SHOWTEXT = true;
@@ -830,8 +835,96 @@ function buildGalaxy(){
 buildGalaxy();
 addEventListener('resize', ()=>{ buildGalaxy(); });
 
-let t=0;
-function step(){ t++; if(!drag) ry += 0.0009; draw(); requestAnimationFrame(step); }
+let t = 0;
+var MODE = /[?&]river=1/.test(location.search) ? 'river' : 'map';
+function setMode2(m){
+  MODE = m;
+  const b = document.getElementById('bMode');
+  if(b) b.textContent = m === 'map' ? '星图 / 星河' : '星河 / 星图';
+  document.body.classList.toggle('river', m === 'river');
+}
+(() => {
+  const b = document.getElementById('bMode');
+  if (b) b.addEventListener('click', () => {
+    const go = MODE === 'map' ? 'river' : 'map';
+    setMode2(go);
+    b.textContent = go === 'river' ? '星图' : '星河';
+    b.classList.toggle('on', go === 'river');
+  });
+  if (MODE === 'river' && b) { b.textContent = '星图'; b.classList.add('on'); document.body.classList.add('river'); }
+})();
+const RIVER_HIT = [];
+function riverDays(){
+  const ds = new Set();
+  for(const n of DATA.nodes){ const t = String(n.tstr||'').slice(0,10); if(/^\d{4}-\d{2}-\d{2}$/.test(t)) ds.add(t); }
+  return [...ds].sort();
+}
+function drawRiver(){
+  const days = riverDays();
+  const L = 96, R = 26, T = 168, B = 90;
+  ctx.fillStyle = '#03060e'; ctx.fillRect(0,0,W,H);
+  // 远处一点水光
+  const g = ctx.createLinearGradient(0, T-40, 0, H-B+40);
+  g.addColorStop(0, 'rgba(20,44,78,.20)'); g.addColorStop(1, 'rgba(8,18,34,.05)');
+  ctx.fillStyle = g; ctx.fillRect(0, T-40, W, H-T-B+80);
+
+  const LANES = ['事实','念想','约定','分寸'];
+  const laneY = k => T + (H-T-B) * ((LANES.indexOf(k)+0.5)/LANES.length);
+  if(!days.length){ ctx.fillStyle='#6f88a8'; ctx.font='14px "Microsoft YaHei",sans-serif'; ctx.fillText('还没有带日期的记忆', L, T+30); return; }
+  const x0 = L, x1 = W - R;
+  const stepX = days.length > 1 ? (x1-x0)/(days.length-1) : 0;
+
+  // 河道：每一层一条淡线 + 层名
+  ctx.font = '12px "Microsoft YaHei",sans-serif';
+  for(const k of LANES){
+    const y = laneY(k);
+    ctx.strokeStyle = 'rgba(120,170,230,.10)'; ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
+    ctx.fillStyle = 'rgba(150,185,225,.55)'; ctx.fillText(k, 18, y+4);
+  }
+  // 日期刻度
+  const every = Math.max(1, Math.ceil(days.length / 9));
+  ctx.fillStyle = 'rgba(130,168,210,.5)';
+  days.forEach((d, i) => {
+    const x = x0 + stepX*i;
+    if(i % every === 0 || i === days.length-1){
+      ctx.strokeStyle = 'rgba(120,170,230,.07)'; ctx.beginPath(); ctx.moveTo(x, T-14); ctx.lineTo(x, H-B+14); ctx.stroke();
+      ctx.fillText(d.slice(5), x - 14, H-B+34);
+    }
+  });
+
+  // 每层的每日堆叠
+  const stack = {};
+  RIVER_HIT.length = 0;
+  for(const n of DATA.nodes){
+    const k = n.kind;
+    if(LANES.indexOf(k) < 0) continue;
+    const d = String(n.tstr||'').slice(0,10);
+    const i = days.indexOf(d);
+    if(i < 0) continue;
+    const key = k + '|' + d;
+    const slot = (stack[key] = (stack[key]||0) + 1) - 1;
+    const x = x0 + stepX*i + ((slot % 9) - 4) * 9;
+    const y = laneY(k) - Math.floor(slot/9) * 15;
+    const col = COLORS[k] || '#5aa9ff';
+    const hot = (mx-x)**2 + (my-y)**2 < 100;
+    ctx.beginPath(); ctx.fillStyle = col;
+    ctx.globalAlpha = hot ? 1 : 0.78;
+    ctx.arc(x, y, hot ? 5.5 : 4, 0, 6.2832); ctx.fill();
+    ctx.globalAlpha = 1;
+    if(hot){
+      ctx.fillStyle = '#dcecff'; ctx.font = '12px "Microsoft YaHei",sans-serif';
+      const label = String(n.text||'').slice(0, 18);
+      ctx.fillText(label, x+8, y-8);
+    }
+    RIVER_HIT.push({x, y, r: 8, id: n.id});
+  }
+  // 标题
+  ctx.fillStyle = 'rgba(190,215,240,.8)'; ctx.font = '13px "Microsoft YaHei",sans-serif';
+  ctx.fillText('星河 · 按天排的记忆　' + days[0] + ' → ' + days[days.length-1] + '　共 ' + days.length + ' 天', L, T-10);
+}
+
+function step(){
+  if(MODE === 'river'){ drawRiver(); requestAnimationFrame(step); return; } t++; if(!drag) ry += 0.0009; draw(); requestAnimationFrame(step); }
 
 function draw(){
   ctx.fillStyle='#02040a'; ctx.fillRect(0,0,W,H);

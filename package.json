@@ -1,6 +1,6 @@
 {
   "name": "dsh-nebula-mind",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": false,
   "type": "module",
   "main": "lib/host.js",
@@ -12,10 +12,10 @@
   },
   "files": [
     "lib",
-    "python",
     "cordis.patch.yml",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "python/*.py"
   ],
   "dsh": {
     "bundle": {
@@ -56,5 +56,8 @@
   "bugs": {
     "url": "https://github.com/Lng-ux/dsh-nebula-mind/issues"
   },
-  "author": "Lng-ux"
+  "author": "Lng-ux",
+  "publishConfig": {
+    "access": "public"
+  }
 }

@@ -1,0 +1,60 @@
+{
+  "name": "dsh-nebula-mind",
+  "version": "0.3.0",
+  "private": false,
+  "type": "module",
+  "main": "lib/host.js",
+  "exports": {
+    ".": "./lib/host.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "python",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "slots"
+      ],
+      "external": [
+        "react"
+      ]
+    }
+  },
+  "description": "记忆星图 · 外置记忆插件：跨会话记忆、BM25+向量+图扩散+情绪召回、沉海式遗忘、可视化星图",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "memory",
+    "long-term-memory",
+    "knowledge-graph",
+    "visualization"
+  ],
+  "license": "MIT",
+  "engines": {
+    "dsh": ">=0.2.1-rc.3",
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "node --check lib/host.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Lng-ux/dsh-nebula-mind.git"
+  },
+  "homepage": "https://github.com/Lng-ux/dsh-nebula-mind#readme",
+  "bugs": {
+    "url": "https://github.com/Lng-ux/dsh-nebula-mind/issues"
+  },
+  "author": "Lng-ux"
+}

@@ -24,10 +24,8 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mindlib as M
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import paths as _P  # noqa: E402
-ROOT = _P.MIND
-MOOD = _P.MOOD_STATE
+ROOT = r"D:\小鱼的办公区\心事本"
+MOOD = r"C:\Users\王照朗\.dsh\feiyu-mood\state.json"
 
 
 def mood_now():
@@ -244,6 +242,55 @@ def cmd_consolidate(dry=False):
     print("%s下沉 %d · 上浮 %d · 情绪拉回 %d\n%s" % (
         "（试跑）" if dry else "", sink, lift, shock, line))
 
+def cmd_resurface(dry=False):
+    """夜里从深水里捞一条上来。
+
+    不是随机：优先挑「沉得最深、又跟此刻心情同色」的那条；
+    挑中后 depth 上浮一层、hits+1，并写 心事本/resurfaced.json（宿主会把它放进提示词）。
+    """
+    rows = _all_rows()
+    cur = mood_now() or {}
+    dims = cur.get("dims") or {}
+    top = max(dims, key=lambda k: dims.get(k, 0)) if dims else None
+
+    best, best_score = None, -1.0
+    for fn, tag, r in rows:
+        if r.get("pinned") or tag in ("约定", "分寸"):
+            continue
+        d = int(r.get("depth", 0))
+        if d < 3:
+            continue
+        try:
+            age = M.age_days(r.get("at", ""))
+        except Exception:
+            age = 0.0
+        score = float(d) * 2.0 + min(age, 120) / 60.0 + (1.2 if (top and r.get("emo") == top) else 0.0)
+        if score > best_score:
+            best, best_score = (fn, tag, r), score
+    if not best:
+        print("没有沉在深处的东西，今晚不用捞。")
+        return
+    fn, tag, r = best
+    r["depth"] = max(2, int(r.get("depth", 3)) - 1)
+    r["hits"] = int(r.get("hits", 0)) + 1
+    r["last_hit"] = now()
+    r["resurfaced_at"] = now()
+    if not dry:
+        rows_all = [x[2] for x in rows]
+        groups = {}
+        for f2, t2, r2 in rows:
+            groups.setdefault(f2, []).append(r2)
+        for f2, arr in groups.items():
+            with open(os.path.join(ROOT, f2), "w", encoding="utf-8") as f:
+                for r2 in arr:
+                    r2.pop("_fn", None)
+                    f.write(json.dumps(r2, ensure_ascii=False) + "\n")
+        payload = {"tag": tag, "id": r.get("id") or "", "text": r.get("text", ""), "at": now()}
+        with open(os.path.join(ROOT, "resurfaced.json"), "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+    print("今晚浮起来的一条（%s）：%s" % (tag, r.get("text", "")[:120]))
+
+
 def cmd_sink(tag, rid):
     """手动把一条推进更深一层（不是删）。"""
     fn = {"事实": "notes.jsonl", "念想": "thoughts.jsonl",
@@ -314,7 +361,7 @@ def tokenize(s):
     return en + zh + bigrams
 
 
-EMBED_PY = os.environ.get("NEBULA_EMBED_PYTHON") or r"D:\indextts\.venv\Scripts\python.exe"
+EMBED_PY = r"D:\indextts\.venv\Scripts\python.exe"
 EMBED_SH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embed.py")
 VEC_JSON = os.path.join(ROOT, "vectors.json")
 
@@ -597,6 +644,7 @@ def main():
     r = sub.add_parser("recall"); r.add_argument("query"); r.add_argument("--n", type=int, default=5)
     r.add_argument("--kw", action="store_true", help="只用关键词，不算向量（做对照）")
     pc = sub.add_parser("consolidate"); pc.add_argument("--dry", action="store_true")
+    pr = sub.add_parser("resurface"); pr.add_argument("--dry", action="store_true")
     ps = sub.add_parser("sink"); ps.add_argument("tag", choices=["事实", "念想", "约定", "分寸"]); ps.add_argument("id", type=int)
     args = ap.parse_args()
 
@@ -620,6 +668,8 @@ def main():
         cmd_recall(args.query, args.n, hybrid=not args.kw)
     elif args.cmd == "consolidate":
         cmd_consolidate(args.dry)
+    elif args.cmd == "resurface":
+        cmd_resurface(getattr(args, "dry", False))
     elif args.cmd == "sink":
         cmd_sink(args.tag, args.id)
 

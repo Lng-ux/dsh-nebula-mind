@@ -30,7 +30,7 @@ def add(level, name, detail, hint=""):
 def check_python():
     v = sys.version_info
     if v >= (3, 9):
-        add(OK, "Python", f"{v.major}.{v.minor}.{v.micro}")
+        add(OK, "Python", f"{v.major}.{v.minor}.{v.micro}", sys.executable)
     else:
         add(BAD, "Python", f"{v.major}.{v.minor}（需要 3.9+）", "装一个新的 Python 再跑")
 
@@ -137,7 +137,13 @@ def check_starmap():
         if r.returncode == 0 and out.exists():
             add(OK, "星图生成", f"{out.name}（{out.stat().st_size // 1024} KB）")
         else:
-            add(BAD, "星图生成失败", (r.stderr or r.stdout or "").strip()[:120])
+            msg = (r.stderr or r.stdout or "").strip()[:120]
+            # 空心事本不算失败——刚装上就是空的，先记几句话再看
+            if "还没有记录" in msg or "空的" in msg:
+                add(WARN, "星图生成", "还没有记忆，画出来是空的",
+                    '先记几条：python python/xin.py add "一句话"')
+            else:
+                add(BAD, "星图生成失败", msg)
     except Exception as e:
         add(BAD, "星图生成失败", str(e)[:120])
 

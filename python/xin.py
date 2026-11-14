@@ -12,6 +12,7 @@
 文件都在 D:\\小鱼的办公区\\心事本\\，一行一件，用文本编辑也能改。
 """
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -25,16 +26,47 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mindlib as M
 
 ROOT = r"D:\小鱼的办公区\心事本"
-MOOD = r"C:\Users\王照朗\.dsh\feiyu-mood\state.json"
+
+# 查询里出现这些词，才认为「这句话本身带着情绪」→ 才开情绪通道。
+# 依据：emotional-memory 的 benchmark 显示通用问答里带情绪通道会掉分，
+# 它用 query_affect_gate_tau=0.2 做门控。见 情绪与记忆-前沿笔记.md 二·六。
+EMO_Q = ("难过", "累", "烦", "难受", "委屈", "害怕", "担心", "生气", "开心",
+         "高兴", "想你", "孤单", "舍不得", "想哭", "崩溃", "焦虑", "心疼", "失落")
+
+
+def ppr(seed: dict, adj: dict, damping: float = 0.5, iters: int = 8) -> dict:
+    """Personalized PageRank：把「命中的记忆」当随机游走的起点，沿共现边扩散。
+
+    HippoRAG 图重排的最小实现（damping=0.5、5~10 次幂迭代）。
+    比原来「从种子跳两跳取最大值」好在：全局归一化，多路径汇聚的节点分数会叠加，
+    而不是只看一条边。
+    """
+    tot = sum(seed.values())
+    reset = dict(seed) if tot <= 0 else {k: v / tot for k, v in seed.items()}
+    p = dict(reset)
+    for _ in range(max(1, int(iters))):
+        nxt = {}
+        for a, nb in adj.items():
+            deg = sum(nb.values())
+            pa = p.get(a, 0.0)
+            if deg <= 0 or pa <= 0:
+                continue
+            for b, w in nb.items():
+                nxt[b] = nxt.get(b, 0.0) + damping * pa * (w / deg)
+        for k, v in reset.items():
+            nxt[k] = nxt.get(k, 0.0) + (1.0 - damping) * v
+        p = nxt
+    return {k: v for k, v in p.items() if v > 1e-9}
 
 
 def mood_now():
-    """把当前心情带进来，让"什么心情下记的事"将来能被同一种心情想起来。"""
+    """把当前心情带进来，让"什么心情下记的事"将来能被同一种心情想起来。
+
+    只问 mindlib——也就是自带引擎。这里不再读任何外部情绪插件的文件：
+    以前那份读的是别人的 state.json，解耦时把它删了，只剩这一条路。
+    """
     try:
-        st = json.load(open(MOOD, encoding="utf-8"))
-        m = st.get("moods", {}).get("__default__") or {}
-        dims = m.get("dims") or {}
-        return {"mood": round(m.get("mood", 0), 1), "dims": {k: round(v, 2) for k, v in dims.items()}}
+        return M.mood_now()
     except Exception:
         return None
 
@@ -95,14 +127,107 @@ def next_id(rows, field="id"):
     return (max((id_num(r.get(field, 0)) for r in rows), default=0) + 1)
 
 
+
+def _feed_mood(text):
+    """写记忆的时候顺带更新心境（引擎在 tools/mood_engine.py，独立于别的情绪插件）。"""
+    try:
+        import mood_engine as ME
+        r = ME.apply(text)
+        d = r.get("delta") or 0
+        if abs(d) >= 0.5:
+            print("心境 %+.1f → %s" % (d, r.get("label", "")))
+    except Exception:
+        pass
+
+def _hormone_weight(text, emo, imp):
+    """激素影响“记得多牢”：皮质醇高时负面记得更狠；催产素高时关于他的事记得更亲。
+    返回乘子（1.0 表示不变），只影响权重，不改内容、不改情绪。"""
+    try:
+        import mood_engine as ME
+        st = ME._load()
+        ME.tick(st)
+        h = st.get("hormones") or {}
+        cort = (float(h.get("cortisol", 50)) - 50) / 50
+        oxy = (float(h.get("oxytocin", 50)) - 50) / 50
+        mul = 1.0
+        neg = emo in ("sad", "heartache", "worry", "jealous")
+        if neg and cort > 0:
+            mul *= 1 + 0.15 * cort        # 最多 ×1.15：难受的时候，难受的事记得更牢
+        about_ta = any(k in text for k in ("主人", "他", "你", "master"))
+        if about_ta and oxy > 0:
+            mul *= 1 + 0.5 * oxy          # 最多 ×1.5：亲近的时候，关于他的事更重
+        return round(min(1.6, max(0.7, mul)), 3)
+    except Exception:
+        return 1.0
+
+
+# ── 突触标记与捕获 ─────────────────────────────────────────────
+# 神经科学里的 tag & capture：先给记忆打个短效标记，两小时内若又碰到相关的事，
+# 那段本来要淡掉的记忆会被顺手加强。重点在「等着被再提一次」，不是按重要性硬排。
+TAG_TTL_MS = 2 * 3600 * 1000      # 标记保鲜 2 小时
+TAG_BOOST = 1.12                  # 被捕获一次，权重乘多少
+CAPTURE_MAX = 3                   # 一次最多捕获几条（预算，防止一次全捞）
+TAG_IMP_MAX = 0.62                # 只给「不够稳」的记忆打标记
+
+
+def _now_ms():
+    return int(time.time() * 1000)
+
+
+def _tag_state():
+    """tags.jsonl 是 append-only，同一个 rid 以最后一条为准（捕获后写 until=0 作废）。"""
+    st = {}
+    for x in read_jsonl("tags.jsonl"):
+        st[id_num(x.get("rid"))] = x
+    return st
+
+
+def _capture(text, notes):
+    '''突触标记与捕获：这次写进来的东西，和哪些还带着标记的旧记忆相关。'''
+    live = [x for x in _tag_state().values() if float(x.get("until", 0)) > _now_ms()]
+    if not live:
+        return []
+    nk = set(tokenize(text))
+    if len(nk) < 2:
+        return []
+    by_id = {id_num(n.get("id")): n for n in notes}
+    cand = []
+    for x in live:
+        rid = id_num(x.get("rid"))
+        src = by_id.get(rid)
+        if not src:
+            continue
+        ov = len(nk & set(tokenize(src.get("text") or "")))
+        if ov >= 2:
+            cand.append((ov, rid))
+    cand.sort(reverse=True)
+    got = []
+    for ov, rid in cand[:CAPTURE_MAX]:
+        append("captured.jsonl", {"rid": rid, "at": now(), "ov": ov, "boost": TAG_BOOST})
+        append("tags.jsonl", {"rid": rid, "until": 0})   # 捕完就揭掉，只捕获一次
+        got.append(rid)
+    return got
+
+
 def cmd_add(text, imp=None):
     rows = read_jsonl("notes.jsonl")
     rec = M.enrich({"id": next_id(rows), "at": now(), "text": text, "mood": mood_now(),
                     "imp": float(imp) if imp else 0.5},
                    default_via="我自己想的")
+    emo = (rec.get("emo") or ["calm"])[0] if isinstance(rec.get("emo"), list) else rec.get("emo")
+    mul = _hormone_weight(text, emo, rec.get("imp", 0.5))
+    if mul != 1.0:
+        rec["w"] = round(float(rec.get("w", 1.0)) * mul, 3)
+        rec["w_why"] = "激素×%.2f" % mul
     r = append("notes.jsonl", rec)
     append_vector("事实", r["id"], text)
+    got = _capture(text, rows + [r])
+    if got:
+        print("捕获 %d 条旧记忆 → 权重 ×%.2f" % (len(got), TAG_BOOST))
+    if float(rec.get("imp", 0.5)) < TAG_IMP_MAX:
+        append("tags.jsonl", {"rid": r["id"], "until": _now_ms() + TAG_TTL_MS})
     print("记下 #%d" % r["id"])
+    _feed_mood(text)
 
 
 def cmd_think(text):
@@ -110,9 +235,15 @@ def cmd_think(text):
     rows = read_jsonl("thoughts.jsonl")
     rec = M.enrich({"id": next_id(rows), "at": now(), "text": text, "mood": mood_now()},
                    default_via="我自己想的")
+    emo = (rec.get("emo") or ["calm"])[0] if isinstance(rec.get("emo"), list) else rec.get("emo")
+    mul = _hormone_weight(text, emo, rec.get("imp", 0.5))
+    if mul != 1.0:
+        rec["w"] = round(float(rec.get("w", 1.0)) * mul, 3)
+        rec["w_why"] = "激素×%.2f" % mul
     r = append("thoughts.jsonl", rec)
     append_vector("念想", r["id"], text)
     print("念想 #%d" % r["id"])
+    _feed_mood(text)
 
 
 def cmd_sum(text):
@@ -163,9 +294,10 @@ def _all_rows():
 MIND_CONF = Path(ROOT) / "mind-config.json"
 CONF_DEFAULT = {
     "L0_core": 1.0, "L1_hot": 0.85, "L2_warm": 0.55, "L3_deep": 0.28, "L4_attic": 0.06,
-    "A_hot": 0.55, "A_warm": 0.25, "A_deep": 0.08,
-    "w_bm25": 0.40, "w_vec": 0.35, "w_graph": 0.15, "w_emo": 0.10,
-    "rrf_k": 60, "graph_hop1": 0.30, "graph_hop2": 0.10,
+    "A_hot": 0.55, "A_warm": 0.25, "A_deep": 0.18,
+    "w_bm25": 0.40, "w_vec": 0.35, "w_graph": 0.15, "w_emo": 0.06,
+    "ppr_damping": 0.5, "ppr_iters": 8,
+    "rrf_k": 12, "graph_hop1": 0.30, "graph_hop2": 0.10,
     "sink_hits_lift": 2, "lift_step": 0.15, "shock_delta": 0.25, "shock_pull": 2,
     "half_base": 30, "half_imp": 2.0, "half_emo": 1.5, "min_w": 0.02,
 }
@@ -191,13 +323,14 @@ def conf():
 def cmd_consolidate(dry=False):
     """夜间沉淀：按"还新不新 + 被想起来过几次"分层，不删任何东西。
 
-    A ≥0.55 → 热　0.25~0.55 → 温　0.08~0.25 → 深水　<0.08 → 阁楼
+    A ≥0.55 → 热　0.25~0.55 → 温　0.18~0.25 → 深水　<0.18 → 阁楼
     被召回 ≥2 次：往上浮一层；情绪剧震（同色且强度 ≥0.5）把 3/4 层拉回 2。
     """
     rows = _all_rows()
     cur = mood_now() or {}
     dims = cur.get("dims") or {}
     top = max(dims, key=lambda k: dims.get(k, 0)) if dims else None
+    cf = conf()
     dist, sink, lift, shock = {}, 0, 0, 0
     for fn, tag, r in rows:
         pinned = bool(r.get("pinned")) or tag in ("约定", "分寸")
@@ -206,12 +339,14 @@ def cmd_consolidate(dry=False):
         except Exception:
             age = 0.0
         imp = float(r.get("imp", 0.5))
-        A = 1.0 if pinned else 2 ** (-age / (30.0 * (1 + 2 * imp)))
+        # 和 cmd_recall 用同一条曲线（幂律）。以前这里是 2**(-age/(30*(1+2*imp)))，
+        # 跟召回那边对不上：同一个记忆，沉海看到一个数、排序看到另一个数。
+        H = cf["half_base"] * (1 + cf["half_imp"] * imp)
+        A = 1.0 if pinned else (1.0 + age / max(0.1, H / 3.0)) ** -0.5
         hits = int(r.get("hits", 0))
         if pinned:
             d = 0
         else:
-            cf = conf()
             d = 1 if A >= cf["A_hot"] else 2 if A >= cf["A_warm"] else 3 if A >= cf["A_deep"] else 4
             if hits >= 2:
                 d = max(0, d - 1)          # 常被想起的，浮一层
@@ -425,16 +560,68 @@ def append_vector(tag, rid, text):
         pass
 
 
+def doc_chunks(per=420):
+    """翻旧账顺便翻的文档：手记、发布指南、规矩、守则、声音、插件说明。
+    切段返回 (标签, 段内小标题, 正文, 文件时间)。"""
+    base = os.path.dirname(ROOT)
+    files = [("手记.md", "手记"), ("发布指南.md", "发布指南"), ("AGENTS.md", "规矩"),
+             ("小鱼守则.md", "守则"), ("声音.md", "声音"),
+             (os.path.join("plugins", "dsh-nebula-mind", "README.md"), "插件说明")]
+    out = []
+    for rel, tag in files:
+        p = os.path.join(base, rel)
+        if not os.path.exists(p):
+            continue
+        try:
+            txt = open(p, encoding="utf-8").read()
+            at = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(os.path.getmtime(p)))
+        except Exception:
+            continue
+        head, buf, size = "", [], 0
+        for line in txt.splitlines():
+            s = line.strip()
+            if not s:
+                continue
+            if s.startswith("#"):
+                head = s.lstrip("# ").strip()[:30]
+                continue
+            buf.append(s)
+            size += len(s)
+            if size >= per:
+                out.append((tag, head, head + "：" + "".join(buf), at))
+                buf, size = [], 0
+        if buf:
+            out.append((tag, head, head + "：" + "".join(buf), at))
+    return out
+
+
+def longest_run(query, text, cap=6):
+    """query 里最长的一段、原样出现在 text 里（≥2 个字符），奖励精确短语。"""
+    q = (query or "").strip()
+    for L in range(min(cap, len(q)), 1, -1):
+        for i in range(len(q) - L + 1):
+            if q[i:i + L] in text:
+                return L
+    return 0
+
+
 def cmd_recall(query, n=5, hybrid=True):
-    """翻旧账：字面（BM25）+ 语义（BGE）+ 关联（图扩散）+ 情绪共振，四路融合。"""
+    """翻旧账：三路召回（BM25 / BGE / 图扩散 PPR）按 RRF 融合，情绪作调制乘子。"""
     docs = []
-    for name, tag in (("notes.jsonl", "事实"), ("summaries.jsonl", "小结"), ("thoughts.jsonl", "念想")):
+    for name, tag in (("notes.jsonl", "事实"), ("summaries.jsonl", "小结"),
+                      ("thoughts.jsonl", "念想"), ("promises.jsonl", "约定"),
+                      ("tacts.jsonl", "分寸"), ("profile.jsonl", "画像")):
         for r in read_jsonl(name):
-            docs.append({"tag": tag, "id": r.get("id"), "at": r.get("at", ""),
-                         "text": r.get("text", ""), "mood": r.get("mood"),
+            docs.append({"tag": tag, "id": r.get("id"), "at": r.get("at") or r.get("ts") or "",
+                         "text": r.get("text") or ((r.get("topic") or "") + "：" + (r.get("why") or "") if r.get("topic") else ""), "mood": r.get("mood"),
                          "emo": r.get("emo"), "e": float(r.get("e") or 0),
-                         "importance": r.get("importance", 2),
+                         "importance": r.get("importance", 3 if r.get("pinned") else 2),
                          "pinned": bool(r.get("pinned"))})
+    for tag, head, txt, at in doc_chunks():
+        docs.append({"tag": "文档·" + tag,
+                     "id": hashlib.md5(txt.encode("utf-8")).hexdigest()[:10], "at": at,
+                     "text": txt, "mood": None, "emo": None, "e": 0.0,
+                     "importance": 2, "pinned": False})
     if not docs:
         print("心事本还是空的。")
         return
@@ -442,6 +629,8 @@ def cmd_recall(query, n=5, hybrid=True):
     cur = mood_now() or {}
     cur_dims = cur.get("dims") or {}
     top_dim = max(cur_dims, key=lambda k: cur_dims.get(k, 0)) if cur_dims else None
+    # 情绪通道门控：只有这句话本身带情绪时才开（否则纯语义，见 EMO_Q 注释）
+    q_affect = any(w in (query or "") for w in EMO_Q)
 
     # ── 第一路：BM25（字面）────────────────────────────
     q = tokenize(query)
@@ -461,7 +650,8 @@ def cmd_recall(query, n=5, hybrid=True):
             if w not in tf:
                 continue
             idf = math.log(1 + (N - df[w] + 0.5) / (df[w] + 0.5))
-            s += idf * tf[w] / (tf[w] + 1.2)
+            wt = 0.45 if len(w) == 1 else 1.0      # 单字噪声大，压一压
+            s += wt * idf * tf[w] / (tf[w] + 1.2)
         if s > 0:
             bm["%s#%s" % (d["tag"], d["id"])] = round(s / (s + 1.6), 4)   # 归一到 0~1
 
@@ -477,10 +667,11 @@ def cmd_recall(query, n=5, hybrid=True):
                 vec[k] = max(0.0, sum(a * b for a, b in zip(qv, v)))       # 点积=余弦
 
     # ── 第三路：图扩散（共同关键词 ≥2 / 同一天 2 小时内）──
-    kws = {"%s#%s" % (d["tag"], d["id"]): set(tokenize(d["text"])) for d in docs}
     idx = {"%s#%s" % (d["tag"], d["id"]): d for d in docs}
-    adj = {k: {} for k in idx}
-    ks = list(idx)
+    mem = [d for d in docs if not d["tag"].startswith("文档")]   # 图只在记忆之间连
+    kws = {"%s#%s" % (d["tag"], d["id"]): set(tokenize(d["text"])) for d in mem}
+    adj = {k: {} for k in kws}
+    ks = list(kws)
     for i in range(len(ks)):
         for j in range(i + 1, len(ks)):
             ka, kb = ks[i], ks[j]
@@ -501,6 +692,13 @@ def cmd_recall(query, n=5, hybrid=True):
 
     # 种子 = 字面/语义的前 6 名（按名次融合，不看分数量纲）
     cf = conf()
+    # 捕获过的记忆：被后来的事「又提了一次」，权重抬一点
+    cap = {}
+    for x in read_jsonl("captured.jsonl"):
+        _r = id_num(x.get("rid"))
+        _b = float(x.get("boost") or 1.0)
+        if _b > cap.get(_r, 1.0):
+            cap[_r] = _b
     rank_bm = {k: i for i, k in enumerate(sorted(bm, key=lambda x: -bm[x]))}
     rank_vec = {k: i for i, k in enumerate(sorted(vec, key=lambda x: -vec[x]))}
     K = cf["rrf_k"]
@@ -514,46 +712,73 @@ def cmd_recall(query, n=5, hybrid=True):
         seed[k] = sc
     seeds = sorted(seed, key=lambda x: -seed[x])[:6]
 
-    bonus = {}
-    for k0 in seeds:
-        for nk, ew in adj.get(k0, {}).items():
-            bonus[nk] = max(bonus.get(nk, 0.0), seed[k0] * cf["w_graph"] * cf["graph_hop1"] * (ew / 2.0))
-            for nk2, ew2 in adj.get(nk, {}).items():
-                if nk2 == k0:
-                    continue
-                bonus[nk2] = max(bonus.get(nk2, 0.0), seed[k0] * cf["w_graph"] * cf["graph_hop2"] * (ew2 / 2.0))
+    # ── 图扩散：Personalized PageRank（HippoRAG：damping=0.5，8 次幂迭代）──
+    # 图分当「第三路召回」按名次融合。原来把它当小数 bonus 加在 seed 边上，
+    # 量级只有 0.003（主分是 0.05~0.08），永远进不了前八——等于图没参与排序。
+    _pr = ppr({k: seed[k] for k in seeds}, adj,
+              damping=cf["ppr_damping"], iters=cf["ppr_iters"])
+    rank_graph = {}
+    for i, k in enumerate(sorted(_pr, key=lambda x: -_pr[x])):
+        rank_graph[k] = i
 
     # ── 融合 ───────────────────────────────────────────
     out = []
     for k, d in idx.items():
-        sc = seed.get(k, 0.0) + bonus.get(k, 0.0)
+        sc = seed.get(k, 0.0)
+        if k in rank_graph:
+            sc += cf["w_graph"] / (K + rank_graph[k] + 1)
         if sc <= 0:
             continue
+        # 突触捕获加成：这条曾经被后来的事再提过一次
+        if d["tag"] in ("事实", "念想"):
+            _cb = cap.get(id_num(d["id"]))
+            if _cb:
+                sc *= _cb
         # 新鲜度
         try:
             age = (time.time() - time.mktime(time.strptime(d["at"][:19], "%Y-%m-%dT%H:%M:%S"))) / 86400
             age = max(0.0, age)
         except Exception:
             age = 0.0
+        # 幂律遗忘：老记忆不是没了，是取不出来（FSRS 的 R(t,S) 形状）。
+        # 取 S=H/3 让 A(H)=0.5；一年后还有 0.163（原来的指数式只剩 0.0002）。
         H = cf["half_base"] * (1 + cf["half_imp"] * d["importance"])
-        A = 1.0 if d["pinned"] else 2 ** (-age / H)
+        A = 1.0 if d["pinned"] else (1.0 + age / max(0.1, H / 3.0)) ** -0.5
         sc *= 0.55 + 0.45 * A
         # 情绪共振：同色且强度够，更容易想起来
-        if top_dim and d["emo"] == top_dim and d["e"] >= 0.3:
+        if q_affect and top_dim and d["emo"] == top_dim and d["e"] >= 0.3:
             sc *= 1.0 + cf["w_emo"]
+        run = longest_run(query, d["text"])
+        if run >= 2:
+            sc *= 1.0 + 0.14 * min(run, 4)              # 整段原样命中，抬高
+        if d["tag"].startswith("文档"):
+            sc *= 0.88                                   # 文档是旁证，别盖过记下的事
         out.append((sc, d, k))
 
+    out.sort(key=lambda x: x[1]["at"], reverse=True)     # 同分时新的在前
     out.sort(key=lambda x: -x[0])
-    for sc, d, k in out[:n]:
+    picked, seen = [], []
+    for sc, d, k in out:                                  # 同义重复只留一条
+        tk = set(tokenize(d["text"]))
+        if tk and any(len(tk & s) / max(1, len(tk | s)) > 0.8 for s in seen):
+            continue
+        picked.append((sc, d, k))
+        seen.append(tk)
+        if len(picked) >= n:
+            break
+
+    for sc, d, k in picked:
         tags = []
         if k in rank_bm:
             tags.append("词#%d" % (rank_bm[k] + 1))
         if k in rank_vec:
             tags.append("义#%d" % (rank_vec[k] + 1))
-        if bonus.get(k):
-            tags.append("图+%.2f" % bonus[k])
+        if k in rank_graph:
+            tags.append("图#%d" % (rank_graph[k] + 1))
         if top_dim and d["emo"] == top_dim and d["e"] >= 0.3:
             tags.append("情·%s" % top_dim)
+        if d["tag"].startswith("文档"):
+            tags.append("档·" + d["tag"].split("·", 1)[1])
         print("%.3f %s %s %s" % (sc, "[" + " ".join(tags) + "]" if tags else "", d["at"][:10], d["text"][:60]))
 
 DIM_NAME = {"happy": "开心", "calm": "平静", "sweet": "甜", "heartache": "心疼",

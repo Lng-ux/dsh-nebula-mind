@@ -22,7 +22,8 @@ MIND = _P.MIND
 MODEL = _P.BGE_DIR  # 可被 --model 覆盖
 OUT = os.path.join(MIND, "vectors.json")
 
-FILES = [("notes.jsonl", "事实"), ("summaries.jsonl", "小结"), ("thoughts.jsonl", "念想")]
+FILES = [("notes.jsonl", "事实"), ("summaries.jsonl", "小结"), ("thoughts.jsonl", "念想"),
+         ("promises.jsonl", "约定"), ("tacts.jsonl", "分寸"), ("profile.jsonl", "画像")]
 
 
 def _load(model_dir):
@@ -62,9 +63,22 @@ def _docs():
             except Exception:
                 continue
             txt = r.get("text") or r.get("content") or ""
+            if not txt and r.get("topic"):
+                txt = "%s：%s" % (r.get("topic"), r.get("why") or "")
             if not txt:
                 continue
             items.append({"id": "%s#%s" % (tag, r.get("id")), "text": txt})
+    # 文档（手记/规矩/守则/声音/发布指南/插件说明）也进向量，语义路才召回得到
+    try:
+        import hashlib
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        import xin
+        for tag, _head, txt, _at in xin.doc_chunks():
+            items.append({"id": "文档·%s#%s" % (tag, hashlib.md5(txt.encode("utf-8")).hexdigest()[:10]),
+                          "text": txt})
+    except Exception as e:
+        print("文档向量跳过：%s" % e, file=sys.stderr)
     return items
 
 

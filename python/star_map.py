@@ -22,15 +22,17 @@ import re
 import sys
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MIND = os.path.join(ROOT, "心事本")
+# 数据在办公区，不在插件安装目录里。插件被搬进 plugins/ 之后这里少算了两层，
+# 结果星图一直读不到记录、doctor 一直报「星图生成失败」。
+BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+MIND = os.environ.get("NEBULA_MIND") or os.path.join(BASE, "心事本")
 
 STOP = set("""的 了 就 也 都 还 和 跟 与 及 或 但 而 是 在 有 没 不 很 太 又 再 才 已经 一下 一个 一条 这个 那个
 我们 你们 他们 自己 什么 怎么 因为 所以 如果 但是 然后 之后 之前 现在 今天 明天 昨天 时候 一点
 可以 应该 需要 觉得 知道 看到 听过 说完 说清 说话""".split())
 
 # 三轨道：内圈稳定、中圈待办、外圈归档
-ORBIT = {"事实": 235, "分寸": 285, "约定": 325, "念想": 400, "分类": 150, "日期": 330}
+ORBIT = {"画像": 170, "事实": 235, "分寸": 285, "约定": 325, "念想": 400, "分类": 150, "日期": 330}
 
 
 def load_jsonl(name):
@@ -100,7 +102,8 @@ def pick_chips(toks, limit=8):
 def build():
     recs = []
     for name, tag in (("notes.jsonl", "事实"), ("thoughts.jsonl", "念想"),
-                      ("promises.jsonl", "约定"), ("tacts.jsonl", "分寸")):
+                      ("promises.jsonl", "约定"), ("tacts.jsonl", "分寸"),
+                      ("profile.jsonl", "画像")):
         for r in load_jsonl(name):
             txt = r.get("text") or r.get("content") or ""
             if not txt:
@@ -288,7 +291,7 @@ body.embed{overflow:hidden}
   <div style="margin-top:6px">
     视野：<button id="b0" class="on">全部</button><button id="b1">一度关联</button><button id="b2">二度关联</button><button id="bMode">星河</button><button id="bT">文字：开</button><button id="bL" class="on">线条：开</button>
   </div>
-  <div id="legend">内圈稳定 · 中圈待办 · 外圈归档 · 金色＝恒星（永不遗忘）</div>
+  <div id="legend">最内圈画像 · 内圈稳定 · 中圈待办 · 外圈归档 · 金色＝恒星（永不遗忘）</div>
   <div id="keys"><b>V</b> 竖屏 9:16　<b>T</b> 文字开关　<b>H</b> 隐藏界面　<b>滚轮</b> 缩放　<b>中键</b> 复位　<b>点星</b> 只看它那条星座</div>
 </div>
 <div id="hud"></div>
@@ -299,6 +302,7 @@ const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 const DPR = 1;           // 性能红线：高清会拖卡整机
 let W = 0, H = 0;
 let VERT = /[?&]v=1/.test(location.search);
+let LBLALL = /[?&]labels=1/.test(location.search);   // 截图/展示用：把大节点的文字也画出来
 let HIDEUI0 = false;
 function resize(){
   if(VERT){
@@ -333,7 +337,7 @@ let HIDEUI = false;
 if (/[?&]embed=1/.test(location.search)) document.body.classList.add('embed');
 // 被 DSH 面板全屏时：给顶上那排控件让出位置，并让 ESC 交回父窗口处理
 (function(){
-  const m = location.search.match(/[?&]hudtop=(\d+)/);
+  const m = location.search.match(/[?&]hudtop=(\\d+)/);
   if (m) {
     const top = Number(m[1]) + 'px';
     const bar = document.getElementById('bar');
@@ -398,10 +402,10 @@ addEventListener('resize', resize); resize();
 const byId = {};
 DATA.nodes.forEach((n,i)=>{ n.i=i; byId[n.id]=n; });
 const COLORS = {'事实':'#5aa9ff','念想':'#c9a4ff','约定':'#ffc14d','分寸':'#5fe0b0',
-                '分类':'#e8f4ff','核心':'#ffd36b','日期':'#7fe3ff'};
+                '画像':'#ff9ecb','分类':'#e8f4ff','核心':'#ffd36b','日期':'#7fe3ff'};
 const GA = 2.399963229728653;
 // 每条轨道一个高度：内圈低、外圈高，转起来才有层次
-const KIND_Y = {'事实':-95,'分寸':-25,'约定':40,'念想':120,'分类':20,'核心':0,'日期':-235};
+const KIND_Y = {'画像':-150,'事实':-95,'分寸':-25,'约定':40,'念想':120,'分类':20,'核心':0,'日期':-235};
 DATA.nodes.forEach((n,i)=>{
   const r0 = n.orbit;
   const cnt = n.slotN || 1, j = n.slot || 0;
@@ -588,7 +592,7 @@ const panel = document.getElementById('panel');
 let curId = null, expandedId = null, expMinorFor = null;
 function esc(t){ return String(t).replace(/[&<>]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
 function brief(t, max){
-  const clean = String(t).replace(/\s+/g,' ').trim();
+  const clean = String(t).replace(/\\s+/g,' ').trim();
   const parts = clean.split(/(?<=[。！？；;])/);
   let out = parts.slice(0,2).join('');
   if(out.length > max) out = out.slice(0, max);
@@ -856,7 +860,7 @@ function setMode2(m){
 const RIVER_HIT = [];
 function riverDays(){
   const ds = new Set();
-  for(const n of DATA.nodes){ const t = String(n.tstr||'').slice(0,10); if(/^\d{4}-\d{2}-\d{2}$/.test(t)) ds.add(t); }
+  for(const n of DATA.nodes){ const t = String(n.tstr||'').slice(0,10); if(/^\\d{4}-\\d{2}-\\d{2}$/.test(t)) ds.add(t); }
   return [...ds].sort();
 }
 function drawRiver(){
@@ -1084,7 +1088,7 @@ function draw(){
     ctx.drawImage(spriteOf(n.color, false), x - cs/2, y - cs/2, cs, cs);
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
-    if(SHOWTEXT && inFocus && (n.core || n.pinned || n.kind==='分类' || n===hov)){
+    if(SHOWTEXT && inFocus && (n.core || n.pinned || n.kind==='分类' || n===hov || (LBLALL && n.kind!=='日期' && n.rad>=5.4))){
       ctx.fillStyle='rgba(214,234,255,'+(0.55+0.4*s)+')';
       ctx.font=(n.core?'13px':(n.kind==='分类'?'12px':'11px'))+' "Microsoft YaHei",sans-serif';
       const label = n.core ? '总核' : (n.kind==='分类' ? n.text.replace(/[「」]/g,'') : n.text.slice(0,10));

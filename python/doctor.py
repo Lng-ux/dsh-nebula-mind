@@ -68,13 +68,44 @@ def check_accounts():
         add(OK, "记忆", detail)
 
 
+def _vec_service():
+    """探常驻向量服务（tools/embed_server.py，跑在 .venv 里）。
+
+    系统 python 没有 torch 不代表没有语义检索——服务一起，recall 就走它。
+    返回 (model, dim) 或 None。
+    """
+    import urllib.request
+    for url in ("http://127.0.0.1:8902/health", "http://127.0.0.1:8902/"):
+        try:
+            with urllib.request.urlopen(url, timeout=1.5) as r:
+                d = json.loads(r.read().decode("utf-8"))
+            if isinstance(d, dict) and d.get("ok"):
+                return d.get("model"), d.get("dim")
+        except Exception:
+            continue
+    return None
+
+
 def check_vector():
+    svc = _vec_service()
+    if svc:
+        model, dim = svc
+        n = 0
+        vec = Path(P.MIND) / "vectors.json"
+        if vec.exists():
+            try:
+                n = len(json.loads(vec.read_text(encoding="utf-8")).get("items", []))
+            except Exception:
+                n = -1
+        tail = " / 索引 %d 条" % n if n > 0 else (" / 索引坏了" if n < 0 else "")
+        add(OK, "语义检索", "服务在线（%s %s 维）%s" % (model or "?", dim or "?", tail))
+        return
     try:
         importlib.import_module("torch")
         importlib.import_module("transformers")
     except Exception as e:
-        add(WARN, "语义检索", f"没有 torch/transformers（{type(e).__name__}）",
-            "缺它也能用：关键词 / 图扩散 / 情绪共振照常；要开语义检索请看 README「向量检索」")
+        add(WARN, "语义检索", f"服务没起，本地也没有 torch/transformers（{type(e).__name__}）",
+            "缺它也能用：关键词 / 图扩散 / 情绪共振照常；要开语义检索先起 tools/embed_server.py")
         return
     model = Path(P.BGE_DIR)
     if not model.exists():
@@ -96,7 +127,7 @@ def check_mood():
     if p.exists():
         add(OK, "心情联动", f"{p}")
     else:
-        add(WARN, "心情联动", "没找到 dsh-feiyu-mood 的状态文件", "不装心情插件也行，心情按中性算")
+        add(WARN, "心情联动", "还没有心情记录（第一次写记忆后会生成）", "不影响别的，心情按中性算")
 
 
 def check_starmap():

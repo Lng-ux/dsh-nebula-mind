@@ -23,7 +23,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paths as _P  # noqa: E402
 ROOT = os.path.dirname(os.path.abspath(__file__))
 MIND = _P.MIND
-MOOD = os.path.expanduser(r"~\.dsh\feiyu-mood\state.json")
 
 DIMS = ["happy", "calm", "sweet", "heartache", "worry", "sad", "jealous"]
 
@@ -38,16 +37,31 @@ def now():
 
 
 def mood_now():
-    """feiyu-mood 的 state.json 长这样：{"version":2,"moods":{"__default__":{...}}}"""
+    """此刻的心情：优先用自带引擎（mood-state.json）。
+
+    返回 {"mood": 0~100, "dims": {七维}}，形状跟老版一致，调用点不用改。
+    只读自带引擎；读不到就退回心事本里的 mood-state.json；再读不到
+    返回 {}。不碰任何外部情绪插件的文件。
+    """
     try:
-        with open(MOOD, encoding="utf-8") as f:
-            d = json.load(f)
+        import mood_engine as ME
+        st = ME._load()          # 只读；tick 只在内存里补衰减，不写盘
+        ME.tick(st)
+        sf = st.get("surface") or {}
+        dims = sf.get("dims") or {}
+        if dims:
+            return {"mood": sf.get("value"), "dims": dims}
     except Exception:
-        return {}
-    ms = d.get("moods")
-    if isinstance(ms, dict) and ms:
-        return ms.get("__default__") or next(iter(ms.values()))
-    return d
+        pass
+    try:
+        with open(os.path.join(MIND, "mood-state.json"), encoding="utf-8") as f:
+            d = json.load(f)
+        sf = d.get("surface") or {}
+        if isinstance(sf, dict) and sf.get("dims"):
+            return {"mood": sf.get("value"), "dims": sf["dims"]}
+    except Exception:
+        pass
+    return {}
 
 
 def dominant_emo(mood=None):

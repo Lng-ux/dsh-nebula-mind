@@ -23,19 +23,21 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import paths as _P  # noqa: E402
 
 SCHEMA = "mood/1"
 DIMS = ("happy", "calm", "sweet", "heartache", "worry", "sad", "jealous")
 
 
 def _root() -> Path:
-    env = os.environ.get("NEBULA_MIND")
-    if env:
-        return Path(env)
-    here = Path(__file__).resolve()
-    return here.parent.parent.parent.parent / "心事本"  # plugins/x/python -> 办公区/心事本
+    # 跟 paths.MIND 同一个来源（NEBULA_MIND → NEBULA_HOME/memory）。
+    # 以前这里按插件目录往上推四层，换了安装位置就指错了。
+    return Path(_P.MIND)
 
 
 def _conf() -> dict:

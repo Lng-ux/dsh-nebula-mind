@@ -10,7 +10,7 @@
 
 每一轮开头自动带一小段「我是谁 / 你是谁 / 最近发生了什么」进提示词；想翻旧事就召回一次——三路并行检索（字面 / 语义 / 图），按名次融合，情绪不做通道、只做调制。忘掉的东西不是消失了，是沉进了深海；情绪一刺激，它还会浮上来。
 
-![记忆星图](docs/shots/starmap.png)
+![记忆星图](docs/shots/starmap.jpg)
 
 > 上图用的是仓库内置的示例数据（20 条虚构记忆 + 4 条画像），不是任何人的真实记忆。
 
@@ -340,7 +340,7 @@ A ≥ 0.55  热    ┐
 
 ## 六、情绪引擎：七维与七种递质
 
-[![心境面板](docs/shots/panel-mood.png)](docs/shots/panel-mood.png)
+[![心境面板](docs/shots/panel-mood.jpg)](docs/shots/panel-mood.jpg)
 
 ### 6.1 七维
 
@@ -447,14 +447,21 @@ dims[k] = phase_rest * (1 - kd)              # 剩下按各维半衰
 ### 从 npm
 
 ```bash
-dsh plugin install dsh-nebula-mind
+dsh plugin --profile <你的profile> add dsh-nebula-mind
+```
+
+`--profile` 是**必填**的——`dsh plugin` 本身不带 `install` 子命令，它是把剩下的参数原样转给 pnpm，所以 `--profile` 得写在前面。profile 名就是 `~/.dsh/profiles/` 下的目录名，只有一份的话通常叫 `desktop`。
+
+```bash
+# 不确定叫什么，先看一眼
+ls ~/.dsh/profiles/
 ```
 
 ### 从本地目录（开发）
 
 ```bash
 git clone https://github.com/Lng-ux/dsh-nebula-mind
-dsh plugin install ./dsh-nebula-mind
+dsh plugin --profile <你的profile> add ./dsh-nebula-mind
 ```
 
 装完**彻底退出 DSH 再重开**（不是关窗口，是结束进程）。
@@ -526,7 +533,7 @@ python python/doctor.py
 
 ### 记忆星图（左侧栏）
 
-[![参数配置](docs/shots/panel-config.png)](docs/shots/panel-config.png)
+[![参数配置](docs/shots/panel-config.jpg)](docs/shots/panel-config.jpg)
 
 - 上面是**活的星图预览**：拖动旋转、滚轮缩放、中键复位；遗忘推演滑杆能往后拖 0–365 天，看哪些星先暗下去；视野可切「全部 / 一度 / 二度」；
 - 下面是**可改的参数**：三路召回权重、RRF 常数、图扩散的跳数与衰减、沉海阈值、遗忘曲线半衰期与重要度倍数、L0–L4 各层检索权重。
@@ -547,7 +554,7 @@ python python/doctor.py
 
 ```bash
 # Windows：计划任务
-schtasks /create /tn "小鱼夜间沉淀" /tr "python D:\path\to\python\夜间沉淀.py" /sc daily /st 22:05
+schtasks /create /tn "Nebula MIND 夜间巩固" /tr "pythonw <插件目录>\python\夜间沉淀.py" /sc daily /st 22:05
 
 # macOS / Linux：cron
 5 22 * * * python /path/to/python/夜间沉淀.py

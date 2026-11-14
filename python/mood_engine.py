@@ -19,8 +19,13 @@ from __future__ import annotations
 import json
 import math
 import os
+import sys
+import os
 import time
 from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import paths as _P  # noqa: E402
 
 DIMS = ("happy", "calm", "sweet", "heartache", "worry", "sad", "jealous")
 BASELINE = 70.0
@@ -85,16 +90,9 @@ HEART = {"心疼": 6, "难受": 4, "舍不得": 5, "对不起": 4, "抱歉": 3}
 
 
 def _root() -> Path:
-    env = os.environ.get("NEBULA_MIND")
-    if env:
-        return Path(env)
-    here = Path(__file__).resolve()
-    # ① 在 tools/ 下：上一级就是工作区  ② 在 plugins/<包>/python/ 下：往上三级
-    for cand in (here.parents[1] / "心事本", here.parents[3] / "心事本",
-                 Path.home() / ".dsh" / "nebula-mind"):
-        if cand.parent.exists() or cand.exists():
-            return cand
-    return here.parents[1] / "心事本"
+    # 跟 paths.MIND 同一个来源。以前这里按文件位置一层层试，
+    # 装在 node_modules 里就会在“插件目录/心事本”旁边另建一个数据根。
+    return Path(_P.MIND)
 
 
 STATE = "mood-state.json"

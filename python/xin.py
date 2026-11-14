@@ -1,6 +1,6 @@
 """心事本的极简版：只追加、纯文件、可手改。
 
-用法（D:\\小鱼的办公区 下）：
+用法（在任意目录下）：
   python tools/xin.py add "随手记一句"            # 记一条
   python tools/xin.py sum "这段时间的小结"         # 写一份小结（自动把之前的随手记标成已归纳）
   python tools/xin.py long "长期笔记的当前版本"    # 重写长期笔记（旧版进 history）
@@ -9,7 +9,7 @@
   python tools/xin.py digest [--chars 6000]        # 拼出现在该放在眼前的那一段
   python tools/xin.py recall "关键词" [--n 5]      # 翻旧账（BM25 + 时间衰减）
 
-文件都在 D:\\小鱼的办公区\\心事本\\，一行一件，用文本编辑也能改。
+文件都在数据根（NEBULA_MIND → NEBULA_HOME/memory），一行一件，用文本编辑也能改。
 """
 import argparse
 import hashlib
@@ -25,7 +25,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mindlib as M
 
-ROOT = r"D:\小鱼的办公区\心事本"
+ROOT = M.MIND   # 数据根只认一处：NEBULA_MIND → NEBULA_HOME/memory
 
 # 查询里出现这些词，才认为「这句话本身带着情绪」→ 才开情绪通道。
 # 依据：emotional-memory 的 benchmark 显示通用问答里带情绪通道会掉分，

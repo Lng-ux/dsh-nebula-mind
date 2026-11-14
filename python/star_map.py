@@ -20,12 +20,14 @@ import math
 import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import paths as _P  # noqa: E402  数据根只认这一个来源（NEBULA_MIND → NEBULA_HOME/memory）
 import time
 
-# 数据在办公区，不在插件安装目录里。插件被搬进 plugins/ 之后这里少算了两层，
-# 结果星图一直读不到记录、doctor 一直报「星图生成失败」。
-BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-MIND = os.environ.get("NEBULA_MIND") or os.path.join(BASE, "心事本")
+# 数据根跟 xin.py 用同一个来源（paths.MIND：NEBULA_MIND → NEBULA_HOME/memory），
+# 别再各算各的——以前这里按插件目录往上推四层，换了机器就画出一张空图。
+MIND = _P.MIND
 
 STOP = set("""的 了 就 也 都 还 和 跟 与 及 或 但 而 是 在 有 没 不 很 太 又 再 才 已经 一下 一个 一条 这个 那个
 我们 你们 他们 自己 什么 怎么 因为 所以 如果 但是 然后 之后 之前 现在 今天 明天 昨天 时候 一点

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """夜里 22:05 的沉淀：沉海 → 重建向量 → 重画星图 → 写日志。
 
-被 Windows 计划任务「小鱼夜间沉淀」调用（pythonw，无窗口）。
+被 Windows 计划任务「Nebula MIND 夜间巩固」调用（pythonw，无窗口）。
 顺序不能乱：先动权重（consolidate），再让向量和星图跟上，
 否则星图会用旧的 depth 画一整晚。
 """

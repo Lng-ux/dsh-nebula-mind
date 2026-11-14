@@ -87,37 +87,35 @@ def _vec_service():
 
 
 def check_vector():
-    svc = _vec_service()
-    if svc:
-        model, dim = svc
-        n = 0
-        vec = Path(P.MIND) / "vectors.json"
-        if vec.exists():
-            try:
-                n = len(json.loads(vec.read_text(encoding="utf-8")).get("items", []))
-            except Exception:
-                n = -1
-        tail = " / 索引 %d 条" % n if n > 0 else (" / 索引坏了" if n < 0 else "")
-        add(OK, "语义检索", "服务在线（%s %s 维）%s" % (model or "?", dim or "?", tail))
-        return
-    try:
-        importlib.import_module("torch")
-        importlib.import_module("transformers")
-    except Exception as e:
-        add(WARN, "语义检索", f"服务没起，本地也没有 torch/transformers（{type(e).__name__}）",
-            "缺它也能用：关键词 / 图扩散 / 情绪共振照常；要开语义检索先起 tools/embed_server.py")
-        return
-    model = Path(P.BGE_DIR)
-    if not model.exists():
-        add(WARN, "语义检索", f"模型没下（{model}）", "见 README「向量检索」的下载步骤，或设 NEBULA_BGE_DIR")
-        return
+    """语义检索：模型随包走，numpy 就够，不再需要 torch / transformers。"""
+    n = 0
     vec = Path(P.MIND) / "vectors.json"
     if vec.exists():
         try:
             n = len(json.loads(vec.read_text(encoding="utf-8")).get("items", []))
-            add(OK, "语义检索", f"模型在 / 索引 {n} 条")
         except Exception:
-            add(WARN, "语义检索", "索引坏了", "重建：python python/embed.py --build")
+            n = -1
+    tail = " / 索引 %d 条" % n if n > 0 else (" / 索引坏了" if n < 0 else "")
+
+    assets = Path(__file__).resolve().parent.parent / "assets"
+    model = assets / "bert-small-zh-fp16.npz"
+    if not model.exists():
+        svc = _vec_service()
+        if svc:
+            add(OK, "语义检索", "服务在线（%s %s 维）%s" % (svc[0] or "?", svc[1] or "?", tail))
+            return
+        add(WARN, "语义检索", "模型文件不在：%s" % model,
+            "重装插件；缺它也能用：关键词 / 图扩散 / 情绪共振照常")
+        return
+    try:
+        importlib.import_module("numpy")
+    except Exception:
+        add(WARN, "语义检索", "没有 numpy", "pip install numpy 之后跑 python python/embed.py --build")
+        return
+    if n > 0:
+        add(OK, "语义检索", "本地模型（numpy，不需要 torch）%s" % tail)
+    elif n < 0:
+        add(WARN, "语义检索", "索引坏了", "重建：python python/embed.py --build")
     else:
         add(WARN, "语义检索", "模型在，还没建索引", "python python/embed.py --build")
 

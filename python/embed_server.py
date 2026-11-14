@@ -1,47 +1,38 @@
-"""把 BGE 小模型挂在 8902 端口上，别每次查一句话都重新加载（一次 13 秒，太贵）。
+"""把语义模型挂在 8902 端口上，别每次查一句话都重新加载（加载一次要几秒，太贵）。
 
 POST /embed  {"text": "..."}  ->  [0.01, -0.02, ...]  (512 维，已归一化)
 GET  /health -> {"ok": true, "model": "...", "dim": 512}
 
-用 IndexTTS 那个 venv 跑（里面有 torch + transformers）：
-  D:\\indextts\\.venv\\Scripts\\pythonw.exe tools\\embed_server.py
+不需要 torch —— 推理是 bert_np.py 里手写的 numpy 前向，权重在 assets/ 里随插件走。
+所以任何有 numpy 的 Python 都能起：
+  python python/embed_server.py
 """
 import json
 import os
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-
 HERE = os.path.dirname(os.path.abspath(__file__))
-MODEL = os.environ.get("YU_BGE_DIR", r"D:\cache\modelscope\bge-small-zh")
-PORT = int(os.environ.get("YU_BGE_PORT", "8902"))
+ASSETS = os.path.join(os.path.dirname(HERE), "assets")
+MODEL = os.path.join(ASSETS, "bert-small-zh-fp16.npz")
+VOCAB = os.path.join(ASSETS, "vocab.txt")
+PORT = int(os.environ.get("NEBULA_BGE_PORT") or os.environ.get("YU_BGE_PORT") or "8902")
 
 _T = {}
 
 
 def _load():
     if "model" in _T:
-        return _T
-    import torch
-    from transformers import AutoModel, AutoTokenizer
-    torch.set_num_threads(max(2, (os.cpu_count() or 4) // 2))
-    _T["torch"] = torch
-    _T["tok"] = AutoTokenizer.from_pretrained(MODEL)
-    m = AutoModel.from_pretrained(MODEL).eval()
-    _T["model"] = m
-    return _T
+        return _T["model"]
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import bert_np
+    _T["model"] = bert_np.Bert(MODEL, VOCAB)
+    return _T["model"]
 
 
 def embed(text):
-    t = _load()
-    torch, tok, model = t["torch"], t["tok"], t["model"]
-    with torch.no_grad():
-        b = tok([text], padding=True, truncation=True, max_length=256, return_tensors="pt")
-        out = model(**b).last_hidden_state[:, 0]          # BGE 用 CLS
-        v = torch.nn.functional.normalize(out, dim=-1)[0].tolist()
-    return v
+    return [round(float(x), 6) for x in _load().encode([text])[0]]
 
 
 class H(BaseHTTPRequestHandler):
@@ -55,8 +46,8 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith("/health"):
-            t = _load()
-            self._send(200, {"ok": True, "model": os.path.basename(MODEL), "dim": 512})
+            _load()
+            self._send(200, {"ok": True, "model": "bge-small-zh-fp16", "dim": 512})
         else:
             self._send(404, {"ok": False})
 
@@ -66,8 +57,7 @@ class H(BaseHTTPRequestHandler):
         n = int(self.headers.get("content-length") or 0)
         try:
             req = json.loads(self.rfile.read(n).decode("utf-8"))
-            v = embed(req.get("text") or "")
-            self._send(200, v)
+            self._send(200, embed(req.get("text") or ""))
         except Exception as e:
             self._send(500, {"ok": False, "error": "%s: %s" % (type(e).__name__, e)})
 
@@ -77,7 +67,7 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     import threading
-    print("embed_server on 127.0.0.1:%d, model=%s" % (PORT, MODEL), flush=True)
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), H)          # 先占端口，别等模型加载完
     threading.Thread(target=_load, daemon=True).start()        # 后台预热，第一句话就不用等
+    print("embed_server on 127.0.0.1:%d (numpy, no torch)" % PORT, flush=True)
     srv.serve_forever()

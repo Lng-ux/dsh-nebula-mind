@@ -467,7 +467,13 @@ dsh plugin install ./dsh-nebula-mind
 python -V
 ```
 
-向量检索需要 `sentence-transformers` 和 `BAAI/bge-small-zh-v1.5`（约 92MB）。**没有也能用**——关键词和图两路照常，只是少一路语义。
+**不需要装任何东西。** 语义模型（BGE-small-zh，48MB）随插件一起分发，推理是手写的 numpy 前向——不需要 torch，不需要 transformers，不需要联网下载。只要 Python 3.8+ 和 numpy。
+
+第一次跑起来（或者备忘多了之后）重建一次索引：
+
+```bash
+python python/embed.py --build
+```
 
 ### 数据放哪
 
@@ -582,8 +588,14 @@ schtasks /create /tn "小鱼夜间沉淀" /tr "python D:\path\to\python\夜间�
 **Q：面板一直是"读取中"？**
 `lib/host.js` 改了之后要**重启 DSH**（Node 不热重载）。Python 那边改了不用重启。
 
-**Q：没有 torch / transformers 能用吗？**
-能。语义那一路会关掉，关键词和图照常。`doctor` 会说明。
+**Q：要装 torch / transformers 吗？**
+不用。语义模型随包分发（`assets/`，48MB），推理是纯 numpy 写的，和 transformers 的输出逐位一致（同一句话 cos = 1.000000）。
+只要 Python 3.8+ 和 numpy——这两样大多数环境本来就有。没有 numpy 也能跑，只是少一路语义。
+
+**Q：为什么要把 48MB 的模型塞进包里？**
+因为不想让人为了一个记忆插件先装几百 MB 到 2GB 的 torch。装得上还好，装不上才是常态——
+而它一旦装不上，语义那一路就悄无声息地关掉了，用户根本不知道为什么"她好像记不住我说过的话"。
+把模型带上，下载解压就能用，这是唯一不靠用户操作就能保证的解法。
 
 **Q：换会话之后它还认得我吗？**
 认得。记忆在硬盘上，不在上下文里——这正是它存在的理由。

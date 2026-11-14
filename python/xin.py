@@ -496,7 +496,9 @@ def tokenize(s):
     return en + zh + bigrams
 
 
-EMBED_PY = r"D:\indextts\.venv\Scripts\python.exe"
+# 语义模型现在不需要 torch，用跑本脚本的这个 Python 就行（只要有 numpy）。
+# 允许用 NEBULA_PY 指定别的解释器，默认就是自己。
+EMBED_PY = os.environ.get("NEBULA_PY") or sys.executable
 EMBED_SH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embed.py")
 VEC_JSON = os.path.join(ROOT, "vectors.json")
 

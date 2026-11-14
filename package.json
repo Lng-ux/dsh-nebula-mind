@@ -1,6 +1,6 @@
 {
   "name": "dsh-nebula-mind",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": false,
   "type": "module",
   "main": "lib/host.js",
@@ -11,6 +11,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "assets",
     "lib",
     "cordis.patch.yml",
     "README.md",
@@ -33,12 +34,13 @@
       ]
     }
   },
-  "description": "记忆星图 · DeepSeek Harness 外置长期记忆：三路召回（BM25 / 稠密向量 / PPR 图扩散）经 RRF 融合、情绪作调制乘子；幂律遗忘与五层沉海、突触标记与捕获；可交互的记忆星图。",
+  "description": "记忆星图 · DeepSeek Harness 外置长期记忆：跨会话、抗压缩，零依赖（自带 48MB 语义模型，numpy 推理，不需要 torch）。三路召回（BM25 / 稠密向量 / PPR 图扩散）经 RRF 融合、情绪作调制乘子；幂律遗忘与五层沉海、突触标记与捕获；可交互的记忆星图。",
   "keywords": [
     "dsh",
     "dsh-plugin",
     "memory",
     "long-term-memory",
+    "cross-session",
     "knowledge-graph",
     "hybrid-retrieval",
     "bm25",
@@ -46,8 +48,8 @@
     "rrf",
     "forgetting-curve",
     "emotion",
-    "personalization",
-    "visualization"
+    "visualization",
+    "zero-dependency"
   ],
   "license": "MIT",
   "engines": {

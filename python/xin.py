@@ -169,6 +169,10 @@ TAG_BOOST = 1.12                  # 被捕获一次，权重乘多少
 CAPTURE_MAX = 3                   # 一次最多捕获几条（预算，防止一次全捞）
 TAG_IMP_MAX = 0.62                # 只给「不够稳」的记忆打标记
 
+HIT_W = 0.05          # 召回一次记多少：只累加，不搬层。见 cmd_recall 的注释
+HIT_LOG_MAX = 4000    # hits.jsonl 超过这么多行，夜间巩固时压一次
+HIT_CAP = 20.0        # hits 封顶：它是「最近被想起」的强度，不是终身奖章
+
 
 def _now_ms():
     return int(time.time() * 1000)
@@ -279,6 +283,23 @@ def cmd_tact(topic, level, why):
     print("分寸已记：%s / %s" % (topic, level))
 
 
+def _hit_log():
+    """把 hits.jsonl 里的召回事件按记忆 id 累加起来。
+
+    为什么单独存事件而不是直接改记忆文件：心事本是 append-only 的，
+    召回每轮跑、mind_remember 也随时写，两边同时 open(...,'w') 会互相覆盖。
+    追加事件没有这个问题，代价是要在读取时聚合一次。
+    """
+    out = {}
+    for x in read_jsonl("hits.jsonl"):
+        try:
+            rid = id_num(x.get("rid"))
+            out[rid] = round(out.get(rid, 0.0) + float(x.get("w") or 0.0), 4)
+        except Exception:
+            continue
+    return out
+
+
 def _all_rows():
     """把四本账摊平成 [(文件名, 行)]，沉海/统计都基于它。"""
     names = [("notes.jsonl", "事实"), ("thoughts.jsonl", "念想"),
@@ -327,6 +348,7 @@ def cmd_consolidate(dry=False):
     被召回 ≥2 次：往上浮一层；情绪剧震（同色且强度 ≥0.5）把 3/4 层拉回 2。
     """
     rows = _all_rows()
+    hitlog = _hit_log()
     cur = mood_now() or {}
     dims = cur.get("dims") or {}
     top = max(dims, key=lambda k: dims.get(k, 0)) if dims else None
@@ -343,7 +365,9 @@ def cmd_consolidate(dry=False):
         # 跟召回那边对不上：同一个记忆，沉海看到一个数、排序看到另一个数。
         H = cf["half_base"] * (1 + cf["half_imp"] * imp)
         A = 1.0 if pinned else (1.0 + age / max(0.1, H / 3.0)) ** -0.5
-        hits = int(r.get("hits", 0))
+        # 召回是淡记（+0.05），这里必须按小数累加——用 int() 会把 0.05 截成 0，
+        # 那些刻痕就白记了。两个 `hits >=` 的阈值也跟着按浮点比。
+        hits = min(HIT_CAP, float(r.get("hits") or 0) + hitlog.get(id_num(r.get("id")), 0.0))
         if pinned:
             d = 0
         else:
@@ -365,6 +389,23 @@ def cmd_consolidate(dry=False):
         r["A"] = round(A, 3)
         dist[d] = dist.get(d, 0) + 1
     if not dry:
+        # hits.jsonl 会随召回一路涨。攒到 HIT_LOG_MAX 条时，把它并回记忆本身的
+        # hits 字段、旧文件改名留档——夜间跑，那时几乎不会有并发写。
+        try:
+            hit_rows = read_jsonl("hits.jsonl")
+            if len(hit_rows) >= HIT_LOG_MAX:
+                merged = {}
+                for x in hit_rows:
+                    rid = id_num(x.get("rid"))
+                    merged[rid] = round(merged.get(rid, 0.0) + float(x.get("w") or 0.0), 4)
+                for fn0, tag0, r0 in rows:
+                    rid0 = id_num(r0.get("id"))
+                    if rid0 in merged:
+                        r0["hits"] = round(min(HIT_CAP, float(r0.get("hits") or 0) + merged.pop(rid0)), 4)
+                os.replace(os.path.join(ROOT, "hits.jsonl"),
+                           os.path.join(ROOT, "hits.old.jsonl"))
+        except Exception:
+            pass
         groups = {}
         for fn, tag, r in rows:
             groups.setdefault(fn, []).append(r)
@@ -407,7 +448,7 @@ def cmd_resurface(dry=False):
         return
     fn, tag, r = best
     r["depth"] = max(2, int(r.get("depth", 3)) - 1)
-    r["hits"] = int(r.get("hits", 0)) + 1
+    r["hits"] = round(float(r.get("hits") or 0) + 1.0, 4)
     r["last_hit"] = now()
     r["resurfaced_at"] = now()
     if not dry:
@@ -770,27 +811,17 @@ def cmd_recall(query, n=5, hybrid=True):
             break
 
     # ── 召回一次，就淡记一次「被想起」──────────────────
-    # 每条 +0.05，只记前 3 条。不改层、不判沉浮——沉浮只由夜间的 resurface 决定。
+    # 每条 +0.05，只记前 3 条。**不改层、不判沉浮**——沉浮只由夜间的 resurface 决定。
     # 为什么是 0.05 不是 1：一天几百轮召回，+1 会让所有东西浮到顶，沉海就废了。
-    # 这个数不对外暴露，是刻意留小的；真要调再说。
+    #
+    # 写法是「追加事件」，不是改写原文：心事本整套是 append-only 的，
+    # 用 open(...,'w') 重写会和 mind_remember 打架（后写的把先写的覆盖掉，没有锁）。
+    # 这里只往 hits.jsonl 追一条，读取时把事件累加到记忆的 hits 上。
     try:
-        hit_ids = {id_num(d.get("id")) for sc0, d, k0 in picked[:3]
-                   if not d["tag"].startswith("文档")}
-        if hit_ids:
-            files = {}
-            for fn2, t2, r2 in _all_rows():
-                files.setdefault(fn2, []).append(r2)
-            for fn2, arr in files.items():
-                touched = False
-                for r2 in arr:
-                    if id_num(r2.get("id")) in hit_ids:
-                        r2["hits"] = round(float(r2.get("hits") or 0) + 0.05, 3)
-                        r2["last_hit"] = now()
-                        touched = True
-                if touched:
-                    with open(os.path.join(ROOT, fn2), "w", encoding="utf-8") as f:
-                        for r2 in arr:
-                            f.write(json.dumps(r2, ensure_ascii=False) + "\n")
+        for sc0, d0, k0 in picked[:3]:
+            if d0["tag"].startswith("文档"):
+                continue
+            append("hits.jsonl", {"rid": id_num(d0.get("id")), "at": now(), "w": HIT_W})
     except Exception:
         pass
 

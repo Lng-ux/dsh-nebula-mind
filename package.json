@@ -1,6 +1,6 @@
 {
   "name": "dsh-nebula-mind",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "private": false,
   "type": "module",
   "main": "lib/host.js",

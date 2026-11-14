@@ -171,7 +171,7 @@ TAG_IMP_MAX = 0.62                # 只给「不够稳」的记忆打标记
 
 HIT_W = 0.05          # 召回一次记多少：只累加，不搬层。见 cmd_recall 的注释
 HIT_LOG_MAX = 4000    # hits.jsonl 超过这么多行，夜间巩固时压一次
-HIT_CAP = 20.0        # hits 封顶：它是「最近被想起」的强度，不是终身奖章
+HIT_CAP = 10.0        # hits 封顶：它是「最近被想起」的强度，不是终身奖章
 
 
 def _now_ms():

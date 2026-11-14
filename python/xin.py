@@ -769,6 +769,31 @@ def cmd_recall(query, n=5, hybrid=True):
         if len(picked) >= n:
             break
 
+    # ── 召回一次，就淡记一次「被想起」──────────────────
+    # 每条 +0.05，只记前 3 条。不改层、不判沉浮——沉浮只由夜间的 resurface 决定。
+    # 为什么是 0.05 不是 1：一天几百轮召回，+1 会让所有东西浮到顶，沉海就废了。
+    # 这个数不对外暴露，是刻意留小的；真要调再说。
+    try:
+        hit_ids = {id_num(d.get("id")) for sc0, d, k0 in picked[:3]
+                   if not d["tag"].startswith("文档")}
+        if hit_ids:
+            files = {}
+            for fn2, t2, r2 in _all_rows():
+                files.setdefault(fn2, []).append(r2)
+            for fn2, arr in files.items():
+                touched = False
+                for r2 in arr:
+                    if id_num(r2.get("id")) in hit_ids:
+                        r2["hits"] = round(float(r2.get("hits") or 0) + 0.05, 3)
+                        r2["last_hit"] = now()
+                        touched = True
+                if touched:
+                    with open(os.path.join(ROOT, fn2), "w", encoding="utf-8") as f:
+                        for r2 in arr:
+                            f.write(json.dumps(r2, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
     for sc, d, k in picked:
         tags = []
         if k in rank_bm:

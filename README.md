@@ -459,6 +459,11 @@ ls ~/.dsh/profiles/
 
 ### 从本地目录（开发）
 
+> **这条路只给改代码的人用。** 装完能跑，但 `mind_remember` 工具会注册失败：
+> `dsh plugin add ./目录` 建的是 junction，真实路径在工作区，插件从 profile 的 `node_modules`
+> 里解析不到 `@deepseek-ai/dsh-tools`，工具描述就没法转成 JSON Schema（日志里是一行 `JsonSchemaError`）。
+> 只影响写入口，面板和召回都正常——0.4.4 起插件自带转换，这条路也不该再踩到了，但**普通用户请走 npm 那条**。
+
 ```bash
 git clone https://github.com/Lng-ux/dsh-nebula-mind
 dsh plugin --profile <你的profile> add ./dsh-nebula-mind
@@ -571,6 +576,23 @@ schtasks /create /tn "Nebula MIND 夜间巩固" /tr "pythonw <插件目录>\pyth
 > ```
 >
 > 0.4.2 之前装过、并从插件面板点过「保存」的，会建出这个名字；0.4.4 起统一为「Nebula MIND 夜间巩固」。
+
+> **从 0.4.2 升级上来的，先确认数据还找得到。**
+> 0.4.2 及更早的版本里，`python/xin.py` 把数据根**写死**成开发机上的一个绝对路径（`D:\小鱼的办公区\心事本`），
+> 没设环境变量时会往那儿写。0.4.3 起改成只认 `NEBULA_MIND` → `NEBULA_HOME/memory` → `~/.dsh/nebula-mind/memory`。
+>
+> 所以升级后如果面板显示 0 条记忆，**数据没有丢，只是不在新代码看的那个地方**。两种办法：
+>
+> ```bash
+> # 一：把旧数据搬过来（推荐，之后就不依赖路径了）
+> #     旧目录一般是你上次看到记忆的那个文件夹，把 *.jsonl / vectors.json / 星图.html 拷进：
+> #     ~/.dsh/nebula-mind/memory/
+>
+> # 二：指回去（省事，但下次搬家还得再改一次）
+> setx NEBULA_MIND "旧目录的绝对路径"
+> ```
+>
+> 搬完重启应用，跑一次 `python python/doctor.py` 确认「数据目录」那一行指对了。
 
 跑一次的输出大致：
 

@@ -611,6 +611,26 @@ schtasks /create /tn "Nebula MIND 夜间巩固" /tr "pythonw <插件目录>\pyth
 - 写进提示词的内容是**你实际存进去的记忆**——所以别往里记不该出现在对话上下文里的东西。
 - `心事本/` 是普通 JSONL，随时可以打开看、手动改、拷走、删掉。
 
+### HTTP 接口也会挡人
+
+10 个 `/api/dsh-nebula-mind/*` 路由都过了两道栅栏，不是谁调都行：
+
+1. **插件自己先判**：`Host` 必须是回环地址（`localhost` / `127.0.0.0/8` / `::1`），
+   带 `Sec-Fetch-Site: cross-site` 的一律拒，带 `Origin` 时必须与 `Host` 同源。
+   校验器自己出错也是拒绝，不放行。
+2. **再交给 DSH**：宿主提供 `connection.requestRejection(req)` 时直接委托它，
+   它里面还有一层浏览器鉴权。
+
+写请求（`POST` / `PUT` / `PATCH` / `DELETE`）额外要求来自本机——局域网能看，不能改。
+部署在反代或局域网后面、确实要放开某个域名时，用环境变量声明：
+
+```bash
+setx NEBULA_TRUSTED_HOSTS "mind.example.com,mind.example.com:8443"
+```
+
+`/open` 只打开内置的那张星图，不接受外部 URL。
+
+
 ---
 
 ## 十二、常见问题

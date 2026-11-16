@@ -111,7 +111,7 @@ def read_builtin() -> dict:
     """自己的账：只读 mood_engine 的实况（mood-state.json）。
 
     2026-11-14：不再退回 mood.json —— 那份中间文件已经删了，
-    语速/音量那些参数现在由 host.js 的 norm() 直接从引擎算。
+    节奏/力度那些参数现在由 host.js 的 norm() 直接从引擎算。
     """
     eng = _from_engine()
     if eng is not None:

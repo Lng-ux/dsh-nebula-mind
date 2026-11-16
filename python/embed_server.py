@@ -6,6 +6,8 @@ GET  /health -> {"ok": true, "model": "...", "dim": 512}
 不需要 torch —— 推理是 bert_np.py 里手写的 numpy 前向，权重在 assets/ 里随插件走。
 所以任何有 numpy 的 Python 都能起：
   python python/embed_server.py
+
+可选口令：set NEBULA_EMBED_TOKEN=xxx 之后，每个请求要带 Authorization: Bearer xxx。
 """
 import json
 import os
@@ -17,6 +19,10 @@ ASSETS = os.path.join(os.path.dirname(HERE), "assets")
 MODEL = os.path.join(ASSETS, "bert-small-zh-fp16.npz")
 VOCAB = os.path.join(ASSETS, "vocab.txt")
 PORT = int(os.environ.get("NEBULA_BGE_PORT") or os.environ.get("YU_BGE_PORT") or "8902")
+# 可选口令：设了 NEBULA_EMBED_TOKEN 就要求每个请求带 Authorization: Bearer <token>。
+# 不设就不校验（默认，兼容老用法）。本机单用户场景下这层意义有限，
+# 但多用户 / 远程开机器的场合能挡住"随便一个进程无限调用把 CPU 吃满"。
+TOKEN = os.environ.get("NEBULA_EMBED_TOKEN") or ""
 
 _T = {}
 
@@ -44,7 +50,15 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _auth_ok(self):
+        if not TOKEN:
+            return True
+        got = (self.headers.get("authorization") or "")
+        return got == "Bearer " + TOKEN
+
     def do_GET(self):
+        if not self._auth_ok():
+            return self._send(401, {"ok": False, "error": "unauthorized"})
         if self.path.startswith("/health"):
             _load()
             self._send(200, {"ok": True, "model": "bge-small-zh-fp16", "dim": 512})
@@ -52,6 +66,8 @@ class H(BaseHTTPRequestHandler):
             self._send(404, {"ok": False})
 
     def do_POST(self):
+        if not self._auth_ok():
+            return self._send(401, {"ok": False, "error": "unauthorized"})
         if not self.path.startswith("/embed"):
             return self._send(404, {"ok": False})
         n = int(self.headers.get("content-length") or 0)

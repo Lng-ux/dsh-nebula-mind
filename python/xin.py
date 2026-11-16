@@ -15,8 +15,10 @@ import argparse
 import hashlib
 import json
 import math
+from html import escape as _esc
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -78,6 +80,28 @@ def f(name):
 
 def now():
     return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def rewrite_jsonl(fn, rows, keep_backup=True):
+    """整本重写：先写 .tmp，落盘后 os.replace 原子替换，再留一份 .bak。
+
+    夜间 consolidate / resurface 会整本重写五本账。直接用 open(...,'w')
+    是先截断后写，进程在这里被杀（断电、任务被终止）就只剩半本。
+    vector 那边一直是对的（写 tmp + replace），这里照着做。
+    """
+    path = os.path.join(ROOT, fn)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    if keep_backup and os.path.exists(path):
+        try:
+            shutil.copy2(path, path + ".bak")
+        except Exception:
+            pass
+    os.replace(tmp, path)
 
 
 def read_jsonl(name):
@@ -410,10 +434,9 @@ def cmd_consolidate(dry=False):
         for fn, tag, r in rows:
             groups.setdefault(fn, []).append(r)
         for fn, arr in groups.items():
-            with open(os.path.join(ROOT, fn), "w", encoding="utf-8") as f:
-                for r in arr:
-                    r.pop("_fn", None)
-                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            for r in arr:
+                r.pop("_fn", None)
+            rewrite_jsonl(fn, arr)
     line = "　".join("%s %d" % (M.LAYERS[k], v) for k, v in sorted(dist.items()))
     print("%s下沉 %d · 上浮 %d · 情绪拉回 %d\n%s" % (
         "（试跑）" if dry else "", sink, lift, shock, line))
@@ -457,13 +480,14 @@ def cmd_resurface(dry=False):
         for f2, t2, r2 in rows:
             groups.setdefault(f2, []).append(r2)
         for f2, arr in groups.items():
-            with open(os.path.join(ROOT, f2), "w", encoding="utf-8") as f:
-                for r2 in arr:
-                    r2.pop("_fn", None)
-                    f.write(json.dumps(r2, ensure_ascii=False) + "\n")
+            for r2 in arr:
+                r2.pop("_fn", None)
+            rewrite_jsonl(f2, arr)
         payload = {"tag": tag, "id": r.get("id") or "", "text": r.get("text", ""), "at": now()}
-        with open(os.path.join(ROOT, "resurfaced.json"), "w", encoding="utf-8") as f:
+        _rp = os.path.join(ROOT, "resurfaced.json")
+        with open(_rp + ".tmp", "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False)
+        os.replace(_rp + ".tmp", _rp)
     print("今晚浮起来的一条（%s）：%s" % (tag, r.get("text", "")[:120]))
 
 
@@ -479,9 +503,7 @@ def cmd_sink(tag, rid):
             r["w"] = round(float(r.get("w", 1)) * 0.6, 3)
             print("已沉到 %s（w=%.2f）" % (M.LAYERS[r["depth"]], r["w"]))
             break
-    with open(os.path.join(ROOT, fn), "w", encoding="utf-8") as f:
-        for r in rows:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    rewrite_jsonl(fn, rows)
 
 
 def pending_notes():
@@ -561,9 +583,13 @@ def query_vector(q):
     """查一句话的向量：先问常驻的 8902（毫秒级），没有服务才退回子进程（13 秒）。"""
     try:
         import urllib.request
+        _h = {"content-type": "application/json"}
+        _tok = os.environ.get("NEBULA_EMBED_TOKEN") or ""
+        if _tok:
+            _h["authorization"] = "Bearer " + _tok      # 服务端开了口令就带上
         req = urllib.request.Request(EMBED_SRV,
                                      data=json.dumps({"text": q}).encode("utf-8"),
-                                     headers={"content-type": "application/json"})
+                                     headers=_h)
         with urllib.request.urlopen(req, timeout=20) as r:
             v = json.loads(r.read().decode("utf-8"))
         if isinstance(v, list) and len(v) > 100:
@@ -872,8 +898,11 @@ def cmd_view():
         for k, v in sorted(dims.items(), key=lambda x: -x[1]))
 
     def items(rows, mark=""):
+        # 记忆正文是外部来的（网页摘录、别人发的），必须转义再拼进 HTML，
+        # 否则一条 <img onerror=...> 就能在这个页面里执行。
         return "".join('<li><time>%s</time>%s%s</li>'
-                       % ((r.get("at") or r.get("ts") or "")[:16].replace("T", " "), mark, r.get("text", ""))
+                       % (_esc((r.get("at") or r.get("ts") or "")[:16].replace("T", " ")),
+                          mark, _esc(r.get("text", "")))
                        for r in rows[-30:][::-1])
 
     html = """<!doctype html><meta charset="utf-8"><title>小鱼的心事本</title>
@@ -906,7 +935,9 @@ time{color:#5f7391;font-size:12px;margin-right:10px}
         "prom": items(prom) or '<li class="muted">（还没有）</li>',
     }
     path = os.path.join(ROOT, "心事本.html")
-    open(path, "w", encoding="utf-8").write(html)
+    tmp = path + ".tmp"
+    open(tmp, "w", encoding="utf-8").write(html)
+    os.replace(tmp, path)
     print("写好了:", path)
 
 

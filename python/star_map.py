@@ -1123,6 +1123,11 @@ step();
 """
 
 
+def _js_safe(data):
+    """JSON 序列化后把 </ 转成 <\\/，防止记忆正文闭合 <script>。"""
+    return json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(MIND, "星图.html"))
@@ -1173,7 +1178,9 @@ def main():
     data = {"nodes": nodes, "edges": edges, "meta": meta,
             "built": time.strftime("%Y-%m-%d %H:%M")}
     core_id = next((n["id"] for n in nodes if n["kind"] == "核心"), "")
-    html = HTML.replace("__DATA__", json.dumps(data, ensure_ascii=False))
+    # 记忆正文里可能出现 </script>，json.dumps 不处理它，会提前闭合脚本块。
+    # 在 JSON 里 <\/ 与 </ 等价，但浏览器不认 <\/script> 是闭合标签。
+    html = HTML.replace("__DATA__", _js_safe(data))
     html = html.replace("__COREID__", json.dumps(core_id))
     os.makedirs(os.path.dirname(a.out), exist_ok=True)
     with open(a.out, "w", encoding="utf-8") as f:

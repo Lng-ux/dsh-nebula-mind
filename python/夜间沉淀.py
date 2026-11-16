@@ -22,13 +22,17 @@ EMBED = ROOT / "embed.py"
 STAR = ROOT / "star_map.py"
 LOG = Path(_P.LOGS) / "nightly.log"
 EMBED_PY = Path(os.environ.get("NEBULA_PYTHON") or sys.executable)
+# 子进程必须无窗口：venv 里的 python.exe 会弹黑框，pythonw 不会。
+# 不依赖 NEBULA_PYTHON 指向哪一个，直接给所有子进程加 CREATE_NO_WINDOW。
+NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
 def run(name, args, python=None):
     py = str(python or sys.executable)
     t0 = time.time()
     p = subprocess.run([py, "-X", "utf8", *args], cwd=str(ROOT),
-                       capture_output=True, encoding="utf-8", errors="replace")
+                       capture_output=True, encoding="utf-8", errors="replace",
+                       creationflags=NO_WINDOW)
     cost = time.time() - t0
     out = (p.stdout or "").strip().splitlines()
     tail = out[-1] if out else ""

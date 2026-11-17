@@ -68,7 +68,7 @@
 
 ### 2.2 六本账
 
-数据在 `心事本/`（可用 `NEBULA_MIND` 环境变量改），每一本是一个 append-only 的 JSONL：
+数据默认在 `~/.dsh/nebula-mind/memory/`（`NEBULA_MIND` 可改指向别处），每一本是一个 append-only 的 JSONL：
 
 | 文件 | 账 | 记什么 | 默认来源权重 |
 |---|---|---|---|
@@ -423,13 +423,18 @@ dims[k] = phase_rest * (1 - kd)              # 剩下按各维半衰
 不想用自带的，可以接别的：
 
 ```jsonc
-// 心事本/mind-config.json
+// <数据目录>/mind-config.json —— 下面三种**选一种**写进去，不是三个都要
 {
-  "mood": { "provider": "builtin" },                              // 自带（默认）
-  "mood": { "provider": "file", "file": "path/to/state.json",     // 读文件
+  // ① 自带引擎（默认，不写就是它）
+  "mood": { "provider": "builtin" }
+
+  // ② 读别人写好的状态文件
+  "mood": { "provider": "file", "file": "path/to/state.json",
             "map": { "value": "$.moods.default.mood",
-                     "dims":  "$.moods.default.dims" } },
-  "mood": { "provider": "http", "url": "http://127.0.0.1:8000/",  // 调接口
+                     "dims":  "$.moods.default.dims" } }
+
+  // ③ 调一个 HTTP 接口（只接受本机或内网地址）
+  "mood": { "provider": "http", "url": "http://127.0.0.1:8000/",
             "timeoutMs": 800 }
 }
 ```
@@ -599,10 +604,10 @@ python python/doctor.py
 
 ```
 ✅ Python       3.14.6
-✅ 数据目录可写       心事本（7 本账）
+✅ 数据目录可写       <数据目录>（7 本账）
 ✅ 记忆         事实 90 / 画像 11 / 约定 5 / 念想 8
 ✅ 语义检索        服务在线（bge-small-zh 512 维） / 索引 212 条
-✅ 心情联动        心事本/mood-state.json
+✅ 心情联动         <数据目录>/mood-state.json
 ✅ 星图生成        nebula-doctor.html（190 KB）
 ```
 
@@ -683,7 +688,7 @@ schtasks /create /tn "Nebula MIND 夜间巩固" /tr "pythonw <插件目录>\pyth
 - **全部数据在本机**。没有网络请求，没有遥测，没有账号。
 - 只有两处会主动连外网：装依赖（pip/npm），和首次下载向量模型。
 - 写进提示词的内容是**你实际存进去的记忆**——所以别往里记不该出现在对话上下文里的东西。
-- `心事本/` 是普通 JSONL，随时可以打开看、手动改、拷走、删掉。
+- 数据目录里全是普通 JSONL，随时可以打开看、手动改、拷走、删掉。
 
 ### HTTP 接口也会挡人
 

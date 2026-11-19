@@ -16,6 +16,7 @@
 """
 import argparse
 import json
+import seg
 import math
 import os
 import re
@@ -34,7 +35,7 @@ STOP = set("""的 了 就 也 都 还 和 跟 与 及 或 但 而 是 在 有 �
 可以 应该 需要 觉得 知道 看到 听过 说完 说清 说话""".split())
 
 # 三轨道：内圈稳定、中圈待办、外圈归档
-ORBIT = {"画像": 170, "事实": 235, "分寸": 285, "约定": 325, "念想": 400, "分类": 150, "日期": 330}
+ORBIT = {"画像": 165, "事实": 240, "分寸": 300, "约定": 340, "念想": 420, "过程": 455, "分类": 150, "日期": 330}
 
 
 def load_jsonl(name):
@@ -57,55 +58,43 @@ def load_jsonl(name):
     return out
 
 
+VOCAB = None
+
+
+def learn_vocab(texts):
+    """先查字典；再把账本里反复出现、词典没有的行话补进来。"""
+    global VOCAB
+    if VOCAB is None:
+        VOCAB = seg.add_words(seg.learn_from(texts))
+    return VOCAB
+
+
 def tokens(text):
-    """中文切 2~4 字；英文/型号整词保留——以前把 IndexTTS2 切成 In/Ind/Inde，看着像乱码。"""
-    text = text or ""
-    out = set()
-    # 先把“英文/型号/数字”整段抠出来（IndexTTS2、RVC、BM25、FTS5 这种）
-    for w in re.findall(r"[A-Za-z][A-Za-z0-9_+\-]{1,}", text):
-        lw = w.lower()
-        if len(lw) >= 2 and lw not in STOP:
-            out.add(lw)
-    # 再把中文按 2~4 字滑窗切开
-    for seg in re.findall(r"[\u4e00-\u9fff]+", text):
-        for n in (2, 3, 4):
-            for i in range(len(seg) - n + 1):
-                w = seg[i:i + n]
-                if w in STOP:
-                    continue
-                out.add(w)
-    return out
+    """查字典切词：只出整词，切不出来的单字直接丢。
+    以前是 2~4 字滑窗全切，于是拼出「不再换回云」「鱼的办」这种跨词碎片。"""
+    return set(seg.segment(text, VOCAB or seg.words()))
 
 
-def _grams(w, n=3):
-    return {w[i:i+n] for i in range(max(0, len(w)-n+1))}
-
-
-def pick_chips(toks, limit=8):
-    """面板上的小标签：只留“最长、且彼此不重叠”的几个。
-    以前会出现 不再 / 不再换 / 不再换回 / 再换回云 这种同一段的四五个变体。"""
-    arr = sorted(toks, key=len, reverse=True)
-    out = []
-    for w in arr:
-        gw = _grams(w)
-        clash = False
-        for o in out:
-            if w in o or o in w or (gw & _grams(o)):
-                clash = True
-                break
-        if clash:
-            continue
-        out.append(w)
-        if len(out) >= limit:
-            break
-    return sorted(out, key=lambda x: (-len(x), x))
+def chips_of(text, limit=8):
+    """面板上的小标签：整词，按「出现次数×100 + 词长」排。"""
+    return seg.keywords(text, topn=limit, vocab=VOCAB or seg.words())
 
 
 def build():
+    _texts = []
+    for _fn in ("notes.jsonl", "thoughts.jsonl", "promises.jsonl",
+                "tacts.jsonl", "procedures.jsonl", "profile.jsonl"):
+        for _r in load_jsonl(_fn):
+            _t = _r.get("text") or _r.get("content") or ""
+            if _t:
+                _texts.append(_t)
+    learn_vocab(_texts)
+
     recs = []
+    sup_pairs = []          # (旧 id, 新 id)：后来被改过的那些
     for name, tag in (("notes.jsonl", "事实"), ("thoughts.jsonl", "念想"),
                       ("promises.jsonl", "约定"), ("tacts.jsonl", "分寸"),
-                      ("profile.jsonl", "画像")):
+                      ("procedures.jsonl", "过程"), ("profile.jsonl", "画像")):
         for r in load_jsonl(name):
             txt = r.get("text") or r.get("content") or ""
             if not txt:
@@ -115,6 +104,8 @@ def build():
                 ts = time.mktime(time.strptime(at[:19], "%Y-%m-%dT%H:%M:%S"))
             except Exception:
                 ts = 0
+            if name == "notes.jsonl" and r.get("superseded_by"):
+                sup_pairs.append((r.get("id"), r.get("superseded_by")))
             recs.append({
                 "id": "%s#%s" % (tag, r.get("id", r["_line"])),
                 "kind": tag,
@@ -124,8 +115,8 @@ def build():
                 "pinned": 1 if (r.get("pinned") or r.get("kind") == "rule") else 0,
                 "importance": int(r.get("importance", 3 if tag == "约定" else 2) or 2),
                 "src": name,
-                "key": sorted(tokens(txt))[:14],
-                "chips": pick_chips(tokens(txt)),
+                "key": chips_of(txt, 14),
+                "chips": chips_of(txt, 8),
             })
     if not recs:
         return [], [], []
@@ -233,11 +224,23 @@ def build():
         except Exception:
             pass
 
+    # ⑥ 取代：后来的说法盖过先前的。虚线，别跟语义边混在一起
+    for old_id, new_id in sup_pairs:
+        a, b = "事实#%s" % old_id, "事实#%s" % new_id
+        if a in {r["id"] for r in recs} and b in {r["id"] for r in recs}:
+            edges.append({"s": a, "t": b, "w": 1.6,
+                          "why": "⑥取代：#%s 这条后来被 #%s 改了（旧的不删，只降权）" % (old_id, new_id)})
+
     # 去重，留 why 最长的
     best = {}
     for e in edges:
         k = tuple(sorted((e["s"], e["t"])))
-        if k not in best or len(e["why"]) > len(best[k]["why"]):
+        cur = best.get(k)
+        if cur is None:
+            best[k] = e
+        elif (e["why"] or "").startswith("⑥"):
+            best[k] = e                      # 取代关系优先于「只是相似」
+        elif not (cur["why"] or "").startswith("⑥") and len(e["why"]) > len(cur["why"]):
             best[k] = e
     edges = list(best.values())
 
@@ -404,13 +407,13 @@ addEventListener('resize', resize); resize();
 const byId = {};
 DATA.nodes.forEach((n,i)=>{ n.i=i; byId[n.id]=n; });
 const COLORS = {'事实':'#5aa9ff','念想':'#c9a4ff','约定':'#ffc14d','分寸':'#5fe0b0',
-                '画像':'#ff9ecb','分类':'#e8f4ff','核心':'#ffd36b','日期':'#7fe3ff'};
+                '画像':'#ff9ecb','过程':'#a8e063','分类':'#e8f4ff','核心':'#ffd36b','日期':'#7fe3ff'};
 const GA = 2.399963229728653;
 // 每条轨道一个高度：内圈低、外圈高，转起来才有层次
-const KIND_Y = {'画像':-150,'事实':-95,'分寸':-25,'约定':40,'念想':120,'分类':20,'核心':0,'日期':-235};
+const KIND_Y = {'画像':-150,'事实':-95,'分寸':-25,'约定':40,'念想':120,'过程':165,'分类':20,'核心':0,'日期':-235};
 DATA.nodes.forEach((n,i)=>{
-  const r0 = n.orbit;
   const cnt = n.slotN || 1, j = n.slot || 0;
+  const r0 = n.orbit;
   const th = GA*0.10 + (j/cnt)*6.2832 + (n.kind==='念想'?0.9:0) + (n.kind==='约定'?2.1:0);
   if(n.kind==='核心'){                       // 总核钉在正中央，先把该有的字段补齐再返回
     n.bx=0; n.by=0; n.bz=0; n.x=0; n.y=0; n.z=0;
@@ -426,7 +429,8 @@ DATA.nodes.forEach((n,i)=>{
   n.w = w; n.rad = 2.6 + Math.min(7, Math.sqrt(w)*3.2);
   n.core = (n.kind==='核心');
 });
-const E = DATA.edges.map(e=>({a:byId[e.s], b:byId[e.t], why:e.why, w:e.w||1})).filter(e=>e.a&&e.b);
+const E = DATA.edges.map(e=>({a:byId[e.s], b:byId[e.t], why:e.why, w:e.w||1, sup:(e.why||'').startsWith('⑥')})).filter(e=>e.a&&e.b);
+DATA.nodes.forEach(n=>{ n.sup = (DATA.edges||[]).some(e=>e.why&&e.why.startsWith('⑥')&&e.t===n.id); });
 const NEI = {};
 E.forEach(e=>{ (NEI[e.a.id]=NEI[e.a.id]||[]).push(e.b.id); (NEI[e.b.id]=NEI[e.b.id]||[]).push(e.a.id); });
 
@@ -979,18 +983,22 @@ function draw(){
   const buckets = {};
   for(const e of E){
     const lit = (visible(e.a) && visible(e.b)) ? 1 : 0;
-    const key = (Math.round((e.w||1)*2)/2).toFixed(1) + '|' + lit;
+    const key = (Math.round((e.w||1)*2)/2).toFixed(1) + '|' + lit + '|' + (e.sup?'s':'n');
     (buckets[key]=buckets[key]||[]).push(e);
   }
   for(const key of Object.keys(buckets)){
     const arr=buckets[key];
-    const [kv, lit] = key.split('|');
+    const [kv, lit, kind] = key.split('|');
     if(lit === '0' && hop !== 0 && focus) { /* 焦点外：只留极淡的底 */ }
     const aBase = (lit === '1' ? (0.022+0.05*Number(kv)) : 0.006);
     ctx.lineWidth = 0.45 + 0.30*Number(kv);
     // 边：受“线条”开关控制
     if(!drawLines) continue;
-    ctx.beginPath(); ctx.strokeStyle='rgba(122,168,232,'+aBase+')';
+    // 取代边画成虚线暖色：一眼能看出「这条被改过」
+    ctx.setLineDash(kind === 's' ? [4,4] : []);
+    ctx.beginPath(); ctx.strokeStyle = kind === 's'
+      ? 'rgba(255,180,120,' + (aBase*3.2).toFixed(3) + ')'
+      : 'rgba(122,168,232,'+aBase+')';
     for(const e of arr){
       const p=pos(e.a), q=pos(e.b);
       const x1=W/2+p.x, y1=H/2+p.y, x2=W/2+q.x, y2=H/2+q.y;
@@ -1001,6 +1009,7 @@ function draw(){
     }
     ctx.stroke();
   }
+  ctx.setLineDash([]);
   if(hov){
     ctx.beginPath(); ctx.strokeStyle='rgba(170,225,255,.55)'; ctx.lineWidth=1.1;
     for(const e of E){
@@ -1077,8 +1086,9 @@ function draw(){
     const r = Math.max(1.2, n.rad*s*(0.45+0.75*Math.sqrt(b)));
     const inFocus = visible(n);
     const heat = HEAT[n.id] || 0;
-    const alpha = (0.25 + 0.75*b) * (0.45 + 0.55*s)
+    let alpha = (0.25 + 0.75*b) * (0.45 + 0.55*s)
                 * (inFocus ? (0.55 + 0.75*heat) : 0.10);
+    if(n.sup) alpha *= 0.42;                               // 被取代的旧记忆压暗
     const isHub = (n.pinned || n.core);
     const tw = 0.9 + 0.1*Math.sin(t*0.03 + n.i);          // 轻微呼吸/闪烁
     const size = Math.max(isHub?34:22, r * (isHub ? 12 : 8.8) * tw * (0.55 + 0.55*Math.sqrt(b))) * (1 + 0.35*heat);

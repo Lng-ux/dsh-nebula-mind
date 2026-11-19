@@ -249,6 +249,20 @@ def cmd_add(text, imp=None):
         rec["w_why"] = "激素×%.2f" % mul
     r = append("notes.jsonl", rec)
     append_vector("事实", r["id"], text)
+    hit = find_supersede(text, r["id"], rows)
+    if hit:
+        old, cos = hit
+        old["superseded_by"] = r["id"]
+        old["sup_w"] = round(float(old.get("w", 1.0)), 3)
+        old["w"] = round(float(old.get("w", 1.0)) * conf()["conflict_damp"], 3)
+        old["sup_why"] = "被 #%d 取代（余弦 %.2f）" % (r["id"], cos)
+        rewrite_jsonl("notes.jsonl", rows)
+        r["supersedes"] = [old["id"]]
+        r["sup_cos"] = round(cos, 3)
+        rewrite_jsonl("notes.jsonl", rows + [r])
+        append("conflicts.jsonl", {"at": now(), "new": r["id"], "old": old["id"],
+                                   "cos": round(cos, 3), "why": old["sup_why"]})
+        print("取代 #%d（余弦 %.2f）" % (old["id"], cos))
     got = _capture(text, rows + [r])
     if got:
         print("捕获 %d 条旧记忆 → 权重 ×%.2f" % (len(got), TAG_BOOST))
@@ -272,6 +286,75 @@ def cmd_think(text):
     append_vector("念想", r["id"], text)
     print("念想 #%d" % r["id"])
     _feed_mood(text)
+
+
+def cmd_proc(text, imp=None):
+    """过程：怎么做某件事的步骤。以后照着做，不用重新想一遍。"""
+    rows = read_jsonl("procedures.jsonl")
+    rec = M.enrich({"id": next_id(rows), "at": now(), "text": text, "mood": mood_now(),
+                    "imp": float(imp) if imp else 0.7},
+                   default_via="我自己想的")
+    emo = (rec.get("emo") or ["calm"])[0] if isinstance(rec.get("emo"), list) else rec.get("emo")
+    mul = _hormone_weight(text, emo, rec.get("imp", 0.7))
+    if mul != 1.0:
+        rec["w"] = round(float(rec.get("w", 1.0)) * mul, 3)
+        rec["w_why"] = "激素×%.2f" % mul
+    r = append("procedures.jsonl", rec)
+    append_vector("过程", r["id"], text)
+    print("过程 #%d" % r["id"])
+    _feed_mood(text)
+
+
+
+def _vectors():
+    """向量表：{「标签#id」: vec}。读不出来就空表。"""
+    try:
+        d = json.load(open(VEC_JSON, encoding="utf-8"))
+        return {it["id"]: it["v"] for it in d.get("items", [])}
+    except Exception:
+        return {}
+
+
+
+CHANGE_WORDS = ("改成", "换成", "改用", "不再", "撤掉", "统一", "现在用", "删掉",
+                "停用", "取代", "替换", "升级到", "迁到", "搬到")
+
+
+def _cos(a, b):
+    if not a or not b:
+        return 0.0
+    d = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(y * y for y in b) ** 0.5
+    return d / (na * nb) if na and nb else 0.0
+
+
+def find_supersede(text, rid, rows, vec=None):
+    """看新写的这条是不是「同一件事的新版本」，是就把旧的标成被取代。
+    只标记、不删除；旧的照样能翻到，只是召回时打折。"""
+    cf = conf()
+    vec = vec or query_vector(text)
+    if not vec:
+        return None
+    vmap = _vectors()
+    changed = any(w in text for w in CHANGE_WORDS)
+    thr = cf["conflict_sim_change"] if changed else cf["conflict_sim"]
+    best, best_cos = None, 0.0
+    for r in rows:
+        if r.get("superseded_by") or not isinstance(r.get("id"), int):
+            continue
+        if r.get("id") == rid:
+            continue
+        v = vmap.get("事实#%d" % r["id"])
+        if not v:
+            continue
+        c = _cos(vec, v)
+        if c > best_cos:
+            best, best_cos = r, c
+    if best is None or best_cos < thr:
+        return None
+    return best, best_cos
+
 
 
 def cmd_sum(text):
@@ -327,7 +410,8 @@ def _hit_log():
 def _all_rows():
     """把四本账摊平成 [(文件名, 行)]，沉海/统计都基于它。"""
     names = [("notes.jsonl", "事实"), ("thoughts.jsonl", "念想"),
-             ("promises.jsonl", "约定"), ("tacts.jsonl", "分寸")]
+             ("promises.jsonl", "约定"), ("tacts.jsonl", "分寸"),
+             ("procedures.jsonl", "过程")]
     out = []
     for fn, tag in names:
         for r in read_jsonl(fn):
@@ -338,6 +422,10 @@ def _all_rows():
 
 MIND_CONF = Path(ROOT) / "mind-config.json"
 CONF_DEFAULT = {
+    "conflict_sim": 0.86,          # 两条记忆余弦相似到这个数，判为「同一件事的新版本」
+    "conflict_sim_change": 0.62,   # 文本里出现「改成/换成/不再」这类字眼时，放宽到这个数
+    "conflict_damp": 0.55,         # 被取代的那条在召回里打折
+
     "L0_core": 1.0, "L1_hot": 0.85, "L2_warm": 0.55, "L3_deep": 0.28, "L4_attic": 0.06,
     "A_hot": 0.55, "A_warm": 0.25, "A_deep": 0.18,
     "w_bm25": 0.40, "w_vec": 0.35, "w_graph": 0.15, "w_emo": 0.06,
@@ -494,7 +582,8 @@ def cmd_resurface(dry=False):
 def cmd_sink(tag, rid):
     """手动把一条推进更深一层（不是删）。"""
     fn = {"事实": "notes.jsonl", "念想": "thoughts.jsonl",
-          "约定": "promises.jsonl", "分寸": "tacts.jsonl"}[tag]
+          "约定": "promises.jsonl", "分寸": "tacts.jsonl",
+          "过程": "procedures.jsonl"}[tag]
     rows = read_jsonl(fn)
     for r in rows:
         if isinstance(r.get("id"), int) and r["id"] == int(rid):
@@ -506,10 +595,14 @@ def cmd_sink(tag, rid):
     rewrite_jsonl(fn, rows)
 
 
+def _not_superseded(rows):
+    return [r for r in rows if not r.get("superseded_by")]
+
+
 def pending_notes():
     sums = read_jsonl("summaries.jsonl")
     up_to = max((id_num(s.get("upTo", 0)) for s in sums), default=0)
-    return [n for n in own_notes() if n["id"] > up_to]
+    return [n for n in own_notes() if n["id"] > up_to and not n.get("superseded_by")]
 
 
 def longterm():
@@ -541,6 +634,10 @@ def cmd_digest(max_chars=6000):
     if th:
         parts.append("## 最近冒出来的念想\n" + "\n".join(
             "- #%d（%s）：%s" % (id_num(t["id"]), t["at"][:16].replace("T", " "), t["text"]) for t in th))
+    procs = read_jsonl("procedures.jsonl")[-4:]
+    if procs:
+        parts.append("## 做过一遍、以后照着做\n" + "\n".join(
+            "- #%d：%s" % (int(pr.get("id") or 0), pr["text"]) for pr in procs))
     pend = pending_notes()
     if pend:
         parts.append("## 还没写进小结的随手记\n" + "\n".join(
@@ -551,12 +648,27 @@ def cmd_digest(max_chars=6000):
     print(out)
 
 
+_VOCAB = None
+
+
 def tokenize(s):
+    """查字典切词（跟星图面板用同一套），单字不再进索引。"""
+    global _VOCAB
+    if _VOCAB is None:
+        try:
+            import seg as _seg
+            _VOCAB = _seg.add_words(_seg.learn_from([r.get("text") or "" for r in _all_rows()]))
+        except Exception:
+            _VOCAB = None
+    if _VOCAB is not None:
+        try:
+            return _seg.segment(s, _VOCAB)
+        except Exception:
+            pass
     s = s.lower()
     en = re.findall(r"[a-z0-9_]+", s)
     zh = re.findall(r"[\u4e00-\u9fff]", s)
-    bigrams = [zh[i] + zh[i + 1] for i in range(len(zh) - 1)]
-    return en + zh + bigrams
+    return en + zh
 
 
 # 语义模型现在不需要 torch，用跑本脚本的这个 Python 就行（只要有 numpy）。
@@ -790,6 +902,12 @@ def cmd_recall(query, n=5, hybrid=True):
     for i, k in enumerate(sorted(_pr, key=lambda x: -_pr[x])):
         rank_graph[k] = i
 
+    # 哪些旧记忆已经被后来的新版本取代（只打折，不藏起来）
+    sup = {}
+    for r in read_jsonl("notes.jsonl"):
+        if r.get("superseded_by") and isinstance(r.get("id"), int):
+            sup[r["id"]] = r["superseded_by"]
+
     # ── 融合 ───────────────────────────────────────────
     out = []
     for k, d in idx.items():
@@ -822,6 +940,11 @@ def cmd_recall(query, n=5, hybrid=True):
             sc *= 1.0 + 0.14 * min(run, 4)              # 整段原样命中，抬高
         if d["tag"].startswith("文档"):
             sc *= 0.88                                   # 文档是旁证，别盖过记下的事
+        if d["tag"] == "事实":
+            _by = sup.get(id_num(d["id"]))
+            if _by:
+                sc *= cf["conflict_damp"]
+                d = dict(d, sup_by=_by)
         out.append((sc, d, k))
 
     out.sort(key=lambda x: x[1]["at"], reverse=True)     # 同分时新的在前
@@ -861,6 +984,8 @@ def cmd_recall(query, n=5, hybrid=True):
             tags.append("图#%d" % (rank_graph[k] + 1))
         if top_dim and d["emo"] == top_dim and d["e"] >= 0.3:
             tags.append("情·%s" % top_dim)
+        if d.get("sup_by"):
+            tags.append("已被#%s取代" % d["sup_by"])
         if d["tag"].startswith("文档"):
             tags.append("档·" + d["tag"].split("·", 1)[1])
         print("%.3f %s %s %s" % (sc, "[" + " ".join(tags) + "]" if tags else "", d["at"][:10], d["text"][:60]))
@@ -947,6 +1072,7 @@ def main():
     a = sub.add_parser("add"); a.add_argument("text"); a.add_argument("--imp", type=float, default=None)
     th = sub.add_parser("think"); th.add_argument("text")
     s = sub.add_parser("sum"); s.add_argument("text")
+    h = sub.add_parser("how"); h.add_argument("text"); h.add_argument("--imp", type=float, default=None)
     l = sub.add_parser("long"); l.add_argument("text")
     p = sub.add_parser("promise"); p.add_argument("text"); p.add_argument("--due", default=None)
     p.add_argument("--type", default="me", choices=["habit", "joke", "me", "ta", "rule"])
@@ -959,13 +1085,15 @@ def main():
     r.add_argument("--kw", action="store_true", help="只用关键词，不算向量（做对照）")
     pc = sub.add_parser("consolidate"); pc.add_argument("--dry", action="store_true")
     pr = sub.add_parser("resurface"); pr.add_argument("--dry", action="store_true")
-    ps = sub.add_parser("sink"); ps.add_argument("tag", choices=["事实", "念想", "约定", "分寸"]); ps.add_argument("id", type=int)
+    ps = sub.add_parser("sink"); ps.add_argument("tag", choices=["事实", "念想", "约定", "分寸", "过程"]); ps.add_argument("id", type=int)
     args = ap.parse_args()
 
     if args.cmd == "add":
         cmd_add(args.text, getattr(args, "imp", None))
     elif args.cmd == "think":
         cmd_think(args.text)
+    elif args.cmd == "how":
+        cmd_proc(args.text, getattr(args, "imp", None))
     elif args.cmd == "sum":
         cmd_sum(args.text)
     elif args.cmd == "long":

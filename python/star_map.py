@@ -487,7 +487,8 @@ function spriteOf(color, streak){
   SPR[key] = c; return c;
 }
 
-let simDays = 0, focus = null, hop = 0;
+let simDays = (function(){ const m = (location.hash||'').match(/day=(\\d+)/); return m ? Math.min(365, +m[1]) : 0; })(),
+    focus = null, hop = 0;
 let HEAT = {};                       // 焦点周围的“扩散热度”：近的亮、远的淡（HippoRAG 的 PPR 近似）
 function computeHeat(){
   HEAT = {};
@@ -509,6 +510,8 @@ function computeHeat(){
     }
   }
 }
+(function(){ const el = document.getElementById('days'); el.value = simDays;
+  document.getElementById('daylab').textContent = simDays; })();
 document.getElementById('days').oninput = e => {
   simDays = +e.target.value; document.getElementById('daylab').textContent = simDays;
 };
@@ -571,13 +574,35 @@ function rot(p){
   const cy=Math.cos(ry), sy=Math.sin(ry), cx=Math.cos(rx), sx=Math.sin(rx);
   let x = p.x*cy - p.z*sy, z = p.x*sy + p.z*cy;
   let y = p.y*cx - z*sx; z = p.y*sx + z*cx;
+  // 视野不动：轨道扩多少就画多大，飞出去的自己滚轮拉远看
   const k = ZOOM();
   return {x:x*k, y:y*k, z:z*k};
 }
+// 轨道整体外扩：按“这一圈所有星的鲜活度”算一个共同的系数，同圈的星永远在同一个环上。
+// 依据盘面亮度衰减 I(r) = I0·exp(-r/h) 的反解：r ∝ ln(1/I)，越淡的一圈被推得越远。
+// 用几何平均（而不是算术平均）：一颗刚记下的亮星不会把整圈的“遗忘程度”拉回来。
+const RINGS = {};
+for(const n of DATA.nodes){ (RINGS[n.orbit] = RINGS[n.orbit] || []).push(n); }
+let ringKCache = { day: null, m: {} };
+function ringK(orbit){
+  if(!orbit) return 1;
+  if(ringKCache.day !== simDays){
+    const m = {};
+    for(const o of Object.keys(RINGS)){
+      const arr = RINGS[o];
+      let s = 0, c = 0;
+      for(const n of arr){ const b = bright(n); if(b > 0){ s += Math.log(b); c++; } }
+      const gb = c ? Math.exp(s / c) : 1;              // 几何平均鲜活度
+      const k = Math.min(1.45, 1 + 0.30 * Math.max(0, -Math.log(Math.max(0.02, gb))));
+      m[o] = k;
+    }
+    m.__max = Object.keys(m).reduce((a, o) => Math.max(a, m[o]), 1);
+    ringKCache = { day: simDays, m };
+  }
+  return ringKCache.m[orbit] || 1;
+}
 function pos(n){
-  const b = bright(n);
-  const drift = (1-b)*90;                       // 淡忘的星会往外飘
-  const k = (n.orbit>0 ? (n.orbit+drift)/n.orbit : 1);
+  const k = ringK(n.orbit);
   return rot({x:n.bx*k, y:n.by*k, z:n.bz*k});
 }
 
@@ -983,14 +1008,21 @@ function draw(){
   const buckets = {};
   for(const e of E){
     const lit = (visible(e.a) && visible(e.b)) ? 1 : 0;
-    const key = (Math.round((e.w||1)*2)/2).toFixed(1) + '|' + lit + '|' + (e.sup?'s':'n');
+    // 端点的鲜活度：推演时两端都淡了，线也跟着淡，别留一条亮线挂到黑星上
+    const na = byId[e.a], nb = byId[e.b];
+    const eb = Math.round(((((na?bright(na):0) + (nb?bright(nb):0)) / 2)) * 5) / 5;
+    const key = (Math.round((e.w||1)*2)/2).toFixed(1) + '|' + lit + '|' + (e.sup?'s':'n') + '|' + eb.toFixed(1);
     (buckets[key]=buckets[key]||[]).push(e);
   }
   for(const key of Object.keys(buckets)){
     const arr=buckets[key];
-    const [kv, lit, kind] = key.split('|');
+    const [kv, lit, kind, ebk] = key.split('|');
+    // 只在推演往前走时才让线变淡：day=0 保持原样，越推越淡到消失
+    const kSim = Math.min(1, simDays / 120);
+    const ebv = Number(ebk || 1);
+    const efade = ebv + (1 - ebv) * (1 - kSim);
     if(lit === '0' && hop !== 0 && focus) { /* 焦点外：只留极淡的底 */ }
-    const aBase = (lit === '1' ? (0.022+0.05*Number(kv)) : 0.006);
+    const aBase = (lit === '1' ? (0.022+0.05*Number(kv)) : 0.006) * efade;
     ctx.lineWidth = 0.45 + 0.30*Number(kv);
     // 边：受“线条”开关控制
     if(!drawLines) continue;

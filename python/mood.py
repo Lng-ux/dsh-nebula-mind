@@ -69,7 +69,7 @@ def _jsonpath(obj, path: str):
 
 
 def _default_params(value: float, dims: dict) -> dict:
-    """三档基线 + 七维微调（host.js 的 norm() 里是同一套，改一处要改两处）。"""
+    """三档基线 + 八维微调（host.js 的 norm() 里是同一套，改一处要改两处）。"""
     if value >= 75:
         rate, volume, clingy, distance = -8.0, 0.0, 0.70, 0.30
     elif value >= 45:

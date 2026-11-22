@@ -2,7 +2,7 @@
 
 两个半衰期（量级参考了同类实现的实测值）：
   · 心情（surface/underlying 的 value）向基线回落：12 小时
-  · 七维情绪各自衰减：90 分钟
+  · 八维情绪各自衰减：90 分钟
 
 三样别人做得比我好的东西，抄进来了：
   · 两层：surface（这一下） / underlying（底色）
@@ -27,13 +27,13 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paths as _P  # noqa: E402
 
-DIMS = ("happy", "calm", "sweet", "heartache", "worry", "sad", "jealous")
+DIMS = ("happy", "calm", "sweet", "heartache", "worry", "sad", "jealous", "angry")
 BASELINE = 70.0
 HALF_MOOD_H = 12.0
 HALF_DIM_MIN = 90.0
 SURFACE_SHARE = 0.65          # 表层情绪里新事件的占比，剩下给底色
 
-# 七维各自散得多快（分钟）。负向留得比正向久——Kzeroko 的 NPC 情绪运行时实测：
+# 八维各自散得多快（分钟）。负向留得比正向久——Kzeroko 的 NPC 情绪运行时实测：
 # hurt 2100s / angry 1350s / uneasy 960s，而 joyful 只有 900s、excited 240s。
 # 这里放慢到小时级，但保住「负向约等于正向的两倍」这个比例。
 DIM_HALF = {
@@ -44,6 +44,7 @@ DIM_HALF = {
     "worry": 160.0,
     "sad": 180.0,
     "jealous": 150.0,
+    "angry": 40.0,
 }
 
 # 瞬时层：这一下涌上来的那部分，几分钟就退。
@@ -76,9 +77,9 @@ POS = {
     "哈哈": 3, "嘿嘿": 3, "舒服": 3, "期待": 3, "安心": 4, "暖": 4, "懂了": 2,
 }
 NEG = {
-    "难过": 8, "伤心": 7, "哭": 7, "委屈": 6, "生气": 6, "烦": 5, "累": 4,
+    "难过": 8, "伤心": 7, "哭": 7, "委屈": 6, "烦": 5, "累": 4,
     "失望": 7, "讨厌": 6, "笨": 5, "蠢": 5, "骂": 6, "凶": 5, "滚": 7, "不理": 7,
-    "走了": 4, "离开": 5, "没电": 3, "生病": 6, "感冒": 5, "疼": 5, "痛": 5,
+    "走了": 4, "离开": 5, "没电": 3, "生病": 6, "感冒": 5, "痛": 5,
     "怕": 5, "担心": 4, "焦虑": 5, "失眠": 5, "孤单": 6, "冷": 2, "算了": 4,
 }
 CALM = {"安静": 4, "平静": 4, "陪着": 3, "在": 1, "慢慢": 2, "不急": 3}
@@ -87,6 +88,11 @@ JEALOUS = {"别人": 3, "别的": 3, "她不": 4, "吃醋": 6, "谁": 1, "另一
 WORRY = {"担心": 4, "怕": 4, "小心": 3, "注意": 2, "安全": 3, "别": 1}
 SAD_WORDS = {"难过": 5, "伤心": 5, "哭": 5, "失望": 4, "委屈": 4, "算了": 3}
 HEART = {"心疼": 6, "难受": 4, "舍不得": 5, "对不起": 4, "抱歉": 3}
+# 生气：V 负、A 高、D 高。按 OCC 这是「他做的事我不认同」，跟委屈（D 低）分开。
+# 词表宁可窄——「烦」「累」那些属于别的维度，塞进来会让生气天天亮。
+ANGER = {"气死": 8, "生气": 6, "火大": 7, "恼火": 7, "恼": 4, "凭什么": 6, "过分": 6,
+         "不爽": 6, "混账": 7, "被耍": 7, "憋气": 6, "气得": 6, "滚": 6, "凶我": 5,
+         "骂我": 6, "别碰": 5, "不管我": 4}
 
 
 def _root() -> Path:
@@ -259,8 +265,64 @@ def _hormone_event(st: dict, text: str, p: float, n: float, sweet, calm) -> None
         add("cortisol", 4.0)
 
 
+# 谈论情绪 ≠ 有情绪。
+# 谈论情绪 ≠ 有情绪。
+# 「说生气」「没生气」「你以为我生气了」「把生气加成第八维」「这句的难过是名词」——
+# 都是在提到某个词，不是在表达它。判官读上下文能分清，关键词表分不清，
+# 所以在词表命中之前先做一次「提及检测」：词前 4 个字里出现这些标记就跳过这次出现。
+MENTION_LEAD = (
+    "说", "讲", "提到", "所谓", "以为", "误以为", "误判", "判成", "标成", "标错", "写成", "改成",
+    "不是", "没有", "没", "别", "问", "显示", "判定", "标记", "写", "引用", "转述", "陈述",
+    "讨论", "理解成", "当成", "叫作", "叫做", "叫", "这个词", "这句", "这种", "这一维", "维度",
+    "标签", "分数", "词", "字", "被记进", "归到", "算成", "记成", "识别成", "判为",
+)
+MENTION_WINDOW = 4
+
+
+# 整句层面的“元语言”信号：出现这些，基本是在讨论情绪这回事，不是在表达
+META_SENTENCE = ("这句话", "这句里", "这个字", "两个字", "名词", "标错", "判错", "误判",
+                 "识别错", "标签写", "维度名", "词表", "改名叫")
+# 词后面紧跟这些，说明是在谈论这个词本身（“加成第八维”“这个词”）
+MENTION_TAIL = ("维", "这个词", "两个字", "这个词上", "标签", "加成")
+
+
+def _is_mention(text: str, idx: int, word: str = "") -> bool:
+    head = text[max(0, idx - MENTION_WINDOW):idx]
+    if any(t in head for t in MENTION_LEAD):
+        return True
+    # 被引号包住：是引用别人的话，或是在点名这个说法
+    if idx > 0 and text[idx - 1] in "「『\"“":
+        return True
+    tail = text[idx + len(word): idx + len(word) + 6] if word else ""
+    if tail and any(t in tail for t in MENTION_TAIL):
+        return True
+    return False
+
+
 def _hits(text: str, table: dict) -> list[tuple[str, int]]:
-    return [(w, n) for w, n in table.items() if w in text]
+    """词表命中，但跳过被谈论的那几次出现（同一词只算一次）。"""
+    out = []
+    if any(m in text for m in META_SENTENCE):   # 整句在讨论情绪本身，不记分
+        return out
+    for w, n in table.items():
+        i = text.find(w)
+        real = False
+        while i >= 0:
+            if not _is_mention(text, i, w):
+                real = True
+                break
+            i = text.find(w, i + 1)
+        if real:
+            out.append((w, n))
+    return out
+
+
+def _hits_anger(text: str) -> list[tuple[str, int]]:
+    return _hits(text, ANGER)
+
+
+def _hits_heart(text: str) -> list[tuple[str, int]]:
+    return _hits(text, HEART)
 
 
 def apply(text: str, st: dict | None = None) -> dict:
@@ -269,14 +331,15 @@ def apply(text: str, st: dict | None = None) -> dict:
     text = (text or "")[:500]
     pos = _hits(text, POS)
     neg = _hits(text, NEG)
+    anger = _hits_anger(text)
     calm = _hits(text, CALM)
     sweet = _hits(text, SWEET)
     jeal = _hits(text, JEALOUS)
     worry = _hits(text, WORRY)
     sadw = _hits(text, SAD_WORDS)
-    heart = _hits(text, HEART)
+    heart = _hits_heart(text)
     p = sum(n for _, n in pos)
-    n = sum(x for _, x in neg)
+    n = sum(x for _, x in neg) + sum(x for _, x in anger)
     delta = (p - n) * 0.45                       # 0.45：一步别迈太大，防贴顶
     delta = max(-9.0, min(9.0, delta))
     delta *= _hormone_gain(st)                   # 皮质醇高→更敏感；血清素高→更稳
@@ -288,6 +351,7 @@ def apply(text: str, st: dict | None = None) -> dict:
     dims["worry"] += sum(x for _, x in worry) * 0.8
     dims["sad"] += sum(x for _, x in sadw) * 0.8
     dims["heartache"] += sum(x for _, x in heart) * 0.8
+    dims["angry"] += sum(x for _, x in anger) * 0.9
     dims["happy"] += max(0, p) * 0.5
     # 耐受：同一个维度短时间连着被触发，这次的总量和分到维度的量一起变钝
     tms = _now_ms()
@@ -325,11 +389,11 @@ def apply(text: str, st: dict | None = None) -> dict:
     label = max(surf["dims"], key=lambda k: surf["dims"][k]) if any(surf["dims"].values()) else "calm"
     st["history"].append({"at": _now_ms(), "delta": round(delta, 2),
                           "value": surf["value"], "label": label,
-                          "why": "我听见「" + text.strip()[:16] + ("…" if len(text.strip()) > 16 else "") + "」"})
+                          "why": text.strip()[:500]})
     st["history"] = st["history"][-60:]
     st["at"] = _now_ms()
     _save(st)
-    return {"delta": round(delta, 2), "why": text[:40], "label": label, "state": st}
+    return {"delta": round(delta, 2), "why": text.strip()[:200], "label": label, "state": st}
 
 
 def resolve(text_fragment: str = "", st: dict | None = None) -> int:
@@ -346,22 +410,26 @@ def resolve(text_fragment: str = "", st: dict | None = None) -> int:
 
 def feed(delta: float, dim: str, why: str = "") -> dict:
     """小模型判完给的这个「这一轮的心情涨跌」，落进引擎。
-    表层吃全量、底色吃三成；七维按涨跌方向和 dim 加分；负面较大就记成一件没解开的结。"""
+    表层吃全量、底色吃三成；八维按涨跌方向和 dim 加分；负面较大就记成一件没解开的结。"""
     delta = max(-9.0, min(9.0, float(delta or 0)))
     dim = dim if dim in DIMS else ("happy" if delta > 0 else "sad")
     st = tick(_load())
     s, u = st["surface"], st["underlying"]
-    s["value"] = max(0.0, min(100.0, s["value"] + delta))
-    u["value"] = max(0.0, min(100.0, u["value"] + delta * 0.30))
-    gain = min(12.0, abs(delta) * 1.6) * _tolerance(st, dim, int(time.time() * 1000))
-    s["dims"][dim] = max(0.0, min(40.0, s["dims"].get(dim, 0.0) + (gain if delta >= 0 else gain * 0.9)))
-    u["dims"][dim] = max(0.0, min(40.0, u["dims"].get(dim, 0.0) + (gain * 0.4 if delta >= 0 else gain * 0.5)))
+    # 耐受也要管总分，不能只管八维：不然连着写/连着被推，value 会一路直线加满。
+    tol = _tolerance(st, dim, int(time.time() * 1000))
+    d_eff = round(delta * tol, 2)
+    s["value"] = max(0.0, min(100.0, s["value"] + d_eff))
+    u["value"] = max(0.0, min(100.0, u["value"] + d_eff * 0.30))
+    gain = min(12.0, abs(delta) * 1.6) * tol
+    dim_gain = gain if (delta >= 0 or dim == "angry") else gain * 0.9
+    s["dims"][dim] = max(0.0, min(40.0, s["dims"].get(dim, 0.0) + dim_gain))
+    u["dims"][dim] = max(0.0, min(40.0, u["dims"].get(dim, 0.0) + (gain * 0.4 if (delta >= 0 or dim == "angry") else gain * 0.5)))
     ph = _phase(st)
     ph[dim] = round(min(s["dims"][dim], ph.get(dim, 0.0) + gain * PHASE_SHARE), 3)
     if delta <= -6 and len(st["unresolved"]) < 10:
-        st["unresolved"].append({"at": int(time.time() * 1000), "text": (why or "")[:120], "weight": round(abs(delta) / 9.0, 2)})
+        st["unresolved"].append({"at": int(time.time() * 1000), "text": (why or "")[:300], "weight": round(abs(delta) / 9.0, 2)})
     st["history"].append({"at": int(time.time() * 1000), "delta": round(delta, 2),
-                          "dim": dim, "why": (why or "")[:160]})
+                          "dim": dim, "why": (why or "")[:500]})
     st["history"] = st["history"][-60:]
     _save(st)
     return {"ok": True, "delta": round(delta, 2), "dim": dim, "value": round(s["value"], 2),

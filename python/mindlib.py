@@ -7,8 +7,7 @@
     emo        情绪色：某一维的名字（happy/calm/sweet/heartache/worry/sad/jealous）
     depth      沉海层：0=核心 1=热 2=温 3=深水 4=阁楼
     pinned     恒星，永不沉
-    hits       被想起的刻痕（召回一次 +0.05，封顶 10）
-    last_hit   最后一次被想起来
+    last_hit   最后一次被想起来（年龄从这里算；不再有刻痕计数）
     sunken_at  什么时候沉下去的
     valid_to   被新记忆取代的时间（null 表示还算数）
     via        来源：他说的 / 我自己想的 / 工具 / 网页
@@ -76,20 +75,19 @@ def dominant_emo(mood=None):
     return k, min(1.0, v / 30.0)
 
 
-def weight(imp=0.5, e=0.0, via="我自己想的", hits=0, age_days=0.0):
+def weight(imp=0.5, e=0.0, via="我自己想的", age_days=0.0):
     """写入权重：来源 × (1 + 重要度 × 情绪强度) —— 再乘一次新鲜的加成。"""
     base = W_BASE.get(via, 1.5)
     w = base * (1.0 + imp) * (1.0 + 0.6 * e)
     w *= 1.0 + 0.25 * max(0.0, 1.0 - age_days / 30.0)      # 刚记下的更重
-    w *= 1.0 + 0.15 * min(4, hits)                          # 被想起过的更重
     return round(w, 3)
 
 
-def depth_for(age_days, pinned=False, hits=0):
+def depth_for(age_days, pinned=False):
     if pinned:
         return 0
-    if hits >= 3 or age_days <= 7:
-        return 0 if hits >= 3 else 1
+    if age_days <= 7:
+        return 1
     if age_days <= 30:
         return 2
     if age_days <= 120:
@@ -121,14 +119,14 @@ def enrich(rec, default_via="我自己想的", pinned=False):
     r.setdefault("e", 0.0)
 
     r.setdefault("via", default_via)
-    r.setdefault("hits", 0)
+    r.pop("hits", None)
     r.setdefault("last_hit", None)
     r.setdefault("sunken_at", None)
     r.setdefault("valid_to", None)
 
     d = age_days(at)
-    r.setdefault("w", weight(r["imp"], r["e"], r["via"], r["hits"], d))
-    r.setdefault("depth", depth_for(d, r["pinned"], r["hits"]))
+    r.setdefault("w", weight(r["imp"], r["e"], r["via"], d))
+    r.setdefault("depth", depth_for(d, r["pinned"]))
     return r
 
 
@@ -139,16 +137,3 @@ def layer_name(depth):
         return "热"
 
 
-def reinforce(rec, step=0.25):
-    """被召回一次：权重往上抬、层往上浮一级。"""
-    r = dict(rec)
-    h = int(r.get("hits", 0)) + 1
-    r["hits"] = h
-    r["last_hit"] = now()
-    r["w"] = round(float(r.get("w", 1.0)) * (1.0 + step / max(1, h)), 3)
-    d = int(r.get("depth", 1))
-    if not r.get("pinned"):
-        r["depth"] = max(0, d - 1)
-        if r["depth"] < 4:
-            r["sunken_at"] = None
-    return r

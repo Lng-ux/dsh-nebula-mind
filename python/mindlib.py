@@ -7,7 +7,7 @@
     emo        情绪色：某一维的名字（happy/calm/sweet/heartache/worry/sad/jealous）
     depth      沉海层：0=核心 1=热 2=温 3=深水 4=阁楼
     pinned     恒星，永不沉
-    hits       被召回次数
+    hits       被想起的刻痕（召回一次 +0.05，封顶 10）
     last_hit   最后一次被想起来
     sunken_at  什么时候沉下去的
     valid_to   被新记忆取代的时间（null 表示还算数）

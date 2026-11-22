@@ -196,6 +196,7 @@ TAG_IMP_MAX = 0.62                # 只给「不够稳」的记忆打标记
 HIT_W = 0.05          # 召回一次记多少：只累加，不搬层。见 cmd_recall 的注释
 HIT_LOG_MAX = 4000    # hits.jsonl 超过这么多行，夜间巩固时压一次
 HIT_CAP = 10.0        # hits 封顶：它是「最近被想起」的强度，不是终身奖章
+HIT_HALF = 30.0       # 刻痕半衰期（天）：一个月前的那次「被想起」只剩一半分量
 
 
 def _now_ms():
@@ -396,12 +397,19 @@ def _hit_log():
     为什么单独存事件而不是直接改记忆文件：心事本是 append-only 的，
     召回每轮跑、mind_remember 也随时写，两边同时 open(...,'w') 会互相覆盖。
     追加事件没有这个问题，代价是要在读取时聚合一次。
+    刻痕会随日子变淡（半衰 HIT_HALF 天）：一个月前被想起 4 次，今天只算 2 次的分量。
+    不折损的话「被想起过」就成了终身奖章，老记忆会一直浮在上面下不去。
     """
     out = {}
     for x in read_jsonl("hits.jsonl"):
         try:
             rid = id_num(x.get("rid"))
-            out[rid] = round(out.get(rid, 0.0) + float(x.get("w") or 0.0), 4)
+            w = float(x.get("w") or 0.0)
+            try:
+                days = max(0.0, M.age_days(x.get("at") or ""))
+            except Exception:
+                days = 0.0
+            out[rid] = round(out.get(rid, 0.0) + w * (0.5 ** (days / HIT_HALF)), 4)
         except Exception:
             continue
     return out
@@ -431,7 +439,7 @@ CONF_DEFAULT = {
     "w_bm25": 0.40, "w_vec": 0.35, "w_graph": 0.15, "w_emo": 0.06,
     "ppr_damping": 0.5, "ppr_iters": 8,
     "rrf_k": 12, "graph_hop1": 0.30, "graph_hop2": 0.10,
-    "sink_hits_lift": 2, "lift_step": 0.15, "shock_delta": 0.25, "shock_pull": 2,
+    "sink_hits_lift": 2, "shock_delta": 0.25, "shock_pull": 2,
     "half_base": 30, "half_imp": 2.0, "half_emo": 1.5, "min_w": 0.02,
 }
 
@@ -457,7 +465,9 @@ def cmd_consolidate(dry=False):
     """夜间沉淀：按"还新不新 + 被想起来过几次"分层，不删任何东西。
 
     A ≥0.55 → 热　0.25~0.55 → 温　0.18~0.25 → 深水　<0.18 → 阁楼
-    被召回 ≥2 次：往上浮一层；情绪剧震（同色且强度 ≥0.5）把 3/4 层拉回 2。
+    被召回：每攒够 sink_hits_lift 分（默认 2）往上浮一层，最多 5 层（hits 封顶 10）。
+           刻痕按 30 天半衰变淡——「最近被想起」的强度，不是终身奖章。
+    情绪剧震（同色且强度 ≥ shock_delta）：从深水/阁楼拉回第 shock_pull 层。
     """
     rows = _all_rows()
     hitlog = _hit_log()
@@ -478,14 +488,27 @@ def cmd_consolidate(dry=False):
         H = cf["half_base"] * (1 + cf["half_imp"] * imp)
         A = 1.0 if pinned else (1.0 + age / max(0.1, H / 3.0)) ** -0.5
         # 召回是淡记（+0.05），这里必须按小数累加——用 int() 会把 0.05 截成 0，
-        # 那些刻痕就白记了。两个 `hits >=` 的阈值也跟着按浮点比。
-        hits = min(HIT_CAP, float(r.get("hits") or 0) + hitlog.get(id_num(r.get("id")), 0.0))
+        # 那些刻痕就白记了；抬层数也是按 hits/step 现算的浮点除法。
+        # 老记录里烘焙进 r["hits"] 的那部分刻痕同样会变淡（按最后一次被想起算）。
+        baked = float(r.get("hits") or 0)
+        if baked:
+            try:
+                baked *= 0.5 ** (max(0.0, M.age_days(r.get("last_hit") or r.get("at") or "")) / HIT_HALF)
+            except Exception:
+                pass
+        hits = min(HIT_CAP, baked + hitlog.get(id_num(r.get("id")), 0.0))
         if pinned:
             d = 0
         else:
             d = 1 if A >= cf["A_hot"] else 2 if A >= cf["A_warm"] else 3 if A >= cf["A_deep"] else 4
-            if hits >= 2:
-                d = max(0, d - 1)          # 常被想起的，浮一层
+            # 每攒够 sink_hits_lift 分抬一层（默认 2 分 → 10 分封顶抬 5 层，正好 L4→L0）。
+            # 抬几层是「算出来的」不是「一夜加一层」：同样的刻痕每晚算出同样的层数，
+            # 刻痕自己会随时间变淡，所以既不会一夜一夜往上爬，也不会因为被想起过就永久住在核心层。
+            step = max(0.5, float(cf["sink_hits_lift"]))
+            # +1e-6：折损算出来的 1.9999999 也算 2 分，不然「刚好 2 分」永远差一点点
+            layers = min(len(M.LAYERS) - 1, int(hits / step + 1e-6))
+            if layers:
+                d = max(0, d - layers)
         old = int(r.get("depth", d))
         if d > old:
             sink += 1
@@ -493,8 +516,9 @@ def cmd_consolidate(dry=False):
         elif d < old:
             lift += 1
             r["sunken_at"] = None
-        if (not pinned) and top and r.get("emo") == top and float(r.get("e") or 0) >= 0.5 and d >= 3:
-            d = 2
+        pull = max(0, min(len(M.LAYERS) - 1, int(cf["shock_pull"])))
+        if (not pinned) and top and r.get("emo") == top and float(r.get("e") or 0) >= float(cf["shock_delta"]) and d > pull:
+            d = pull
             shock += 1
             r["sunken_at"] = None
         r["depth"] = d

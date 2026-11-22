@@ -1,6 +1,6 @@
 {
   "name": "dsh-nebula-mind",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "private": false,
   "type": "module",
   "main": "lib/host.js",
@@ -16,6 +16,7 @@
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
+    "CHANGELOG.md",
     "python/*.py",
     "screenshots.json",
     "docs/shots"

@@ -126,6 +126,22 @@ def check_mood():
         add(OK, "心情联动", f"{p}")
     else:
         add(WARN, "心情联动", "还没有心情记录（第一次写记忆后会生成）", "不影响别的，心情按中性算")
+        return
+    # 七种激素全趴在基线 50 = 面板上七根柱子全是 +0。
+    # 0.7.0 就是这么翻的车：情绪换了走判官的 feed()，可激素只挂在关键词那条 apply() 上。
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+        h = d.get("hormones") or {}
+        hist = d.get("history") or []
+        if h:
+            moved = any(abs(float(v) - 50.0) > 0.05 for v in h.values())
+            swings = [x for x in hist[-6:] if abs(float(x.get("delta") or 0)) > 0.5]
+            if not moved and swings:
+                add(WARN, "激素联动", "七种激素全在基线 50，最近却有情绪涨跌",
+                    "喂激素的那条路可能又断了，面板上会全是 +0")
+    except Exception:
+        pass
+
 
 
 def check_starmap():

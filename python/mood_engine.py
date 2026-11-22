@@ -265,6 +265,54 @@ def _hormone_event(st: dict, text: str, p: float, n: float, sweet, calm) -> None
         add("cortisol", 4.0)
 
 
+def _hormone_pulse(st: dict, dim: str, delta: float) -> None:
+    """判官那条路（feed）也要喂激素。
+
+    2026-11-22：0.7.0 把情绪改成「一手优先 + 判官 OCC/VAD」之后，日常走的是 feed()，
+    而激素只挂在关键词那条 apply() 上——于是一串柱子从那天起一直趴在基线 50，
+    面板上全是 +0。这里按「涨跌 + 落到哪个维度」补一次脉冲，量级跟 apply 里那套对齐。
+    """
+    h = st.setdefault("hormones", {k: v["base"] for k, v in HORMONES.items()})
+
+    def add(k, dv):
+        # 皮质醇照样走 HPA 延迟层：先记目标，由 tick 慢慢追上来
+        if k == "cortisol":
+            t = float(st.get("_cort_target", HORMONES["cortisol"]["base"])) + dv
+            st["_cort_target"] = round(max(0.0, min(100.0, t)), 2)
+            return
+        v = float(h.get(k, HORMONES[k]["base"])) + dv
+        h[k] = round(max(0.0, min(100.0, v)), 2)
+
+    a = min(9.0, abs(float(delta or 0)))
+    if a <= 0:
+        return
+    if delta > 0:
+        add("dopamine", min(14.0, a * 3.2))
+        add("serotonin", min(6.0, a * 0.9))
+    else:
+        add("cortisol", min(16.0, a * 2.6))
+        add("serotonin", -min(2.5, a * 0.35))
+    if dim == "sweet":
+        add("oxytocin", min(16.0, a * 3.0))
+    elif dim == "happy":
+        add("endorphin", min(12.0, a * 2.2))
+    elif dim == "calm":
+        add("gaba", min(14.0, a * 2.6))
+    elif dim == "heartache":
+        add("oxytocin", min(14.0, a * 2.0))
+        add("endorphin", min(10.0, a * 1.6))
+    elif dim in ("worry", "sad"):
+        add("cortisol", min(10.0, a * 1.4))
+        if dim == "sad":
+            add("serotonin", -min(2.0, a * 0.3))
+    elif dim == "angry":
+        add("noradrenaline", min(18.0, a * 2.6))
+        add("gaba", -min(8.0, a * 1.2))
+    elif dim == "jealous":
+        add("cortisol", min(8.0, a * 1.2))
+        add("noradrenaline", min(10.0, a * 1.4))
+
+
 # 谈论情绪 ≠ 有情绪。
 # 谈论情绪 ≠ 有情绪。
 # 「说生气」「没生气」「你以为我生气了」「把生气加成第八维」「这句的难过是名词」——
@@ -418,6 +466,7 @@ def feed(delta: float, dim: str, why: str = "") -> dict:
     # 耐受也要管总分，不能只管八维：不然连着写/连着被推，value 会一路直线加满。
     tol = _tolerance(st, dim, int(time.time() * 1000))
     d_eff = round(delta * tol, 2)
+    _hormone_pulse(st, dim, d_eff)   # 激素不能只有关键词那条路喂——0.7.0 之后日常走的是这里
     s["value"] = max(0.0, min(100.0, s["value"] + d_eff))
     u["value"] = max(0.0, min(100.0, u["value"] + d_eff * 0.30))
     gain = min(12.0, abs(delta) * 1.6) * tol

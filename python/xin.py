@@ -1,13 +1,13 @@
 """心事本的极简版：只追加、纯文件、可手改。
 
-用法（在任意目录下）：
-  python tools/xin.py add "随手记一句"            # 记一条
-  python tools/xin.py sum "这段时间的小结"         # 写一份小结（自动把之前的随手记标成已归纳）
-  python tools/xin.py long "长期笔记的当前版本"    # 重写长期笔记（旧版进 history）
-  python tools/xin.py promise "答应过的事" [--due 2026-11-20] [--type habit|me|ta|rule|joke]
-  python tools/xin.py tact "某个话题" --level open|light|tone|wait --why "为什么"
-  python tools/xin.py digest [--chars 6000]        # 拼出现在该放在眼前的那一段
-  python tools/xin.py recall "关键词" [--n 5]      # 翻旧账（BM25 + 时间衰减）
+用法（在插件目录下：lib/、python/ 的上一级）：
+  python python/xin.py add "随手记一句"            # 记一条
+  python python/xin.py sum "这段时间的小结"         # 写一份小结（自动把之前的随手记标成已归纳）
+  python python/xin.py long "长期笔记的当前版本"    # 重写长期笔记（旧版进 history）
+  python python/xin.py promise "答应过的事" [--due 2026-11-20] [--type habit|me|ta|rule|joke]
+  python python/xin.py tact "某个话题" --level open|light|tone|wait --why "为什么"
+  python python/xin.py digest [--chars 6000]        # 拼出现在该放在眼前的那一段
+  python python/xin.py recall "关键词" [--n 5]      # 翻旧账（BM25 + 时间衰减）
 
 文件都在数据根（NEBULA_MIND → NEBULA_HOME/memory），一行一件，用文本编辑也能改。
 """

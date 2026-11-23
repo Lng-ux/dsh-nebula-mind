@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""夜里 22:05 的沉淀：沉海 → 重建向量 → 重画星图 → 写日志。
+"""夜里 22:05 的沉淀：沉海 → 捞一条 → 重建向量 → 重画星图 → 写日志。
 
 被 Windows 计划任务「Nebula MIND 夜间巩固」调用（pythonw，无窗口）。
-顺序不能乱：先动权重（consolidate），再让向量和星图跟上，
-否则星图会用旧的 depth 画一整晚。
+顺序不能乱：先动权重（consolidate），再从深水里捞一条（resurface），
+然后让向量和星图跟上，否则星图会用旧的 depth 画一整晚。
 """
 import os
 
@@ -48,6 +48,11 @@ def main():
     ok1, tail1, err1 = run("沉海", [str(XIN), "consolidate"])
     lines.append(f"沉海: {'ok' if ok1 else 'fail'} {tail1}{' / ' + err1 if err1 else ''}")
 
+    # 从深水里捞一条上来：这是「被想起来」唯一会自己发生的地方。
+    # 以前这步没人调，resurfaced.json 永远不存在，沉下去的再没机会浮回来。
+    ok4, tail4, err4 = run("捞一条", [str(XIN), "resurface"])
+    lines.append(f"捞一条: {'ok' if ok4 else 'fail'} {tail4}{' / ' + err4 if err4 else ''}")
+
     if EMBED_PY.exists():
         ok2, tail2, err2 = run("向量", [str(EMBED), "--build"], python=EMBED_PY)
     else:
@@ -57,7 +62,7 @@ def main():
     ok3, tail3, err3 = run("星图", [str(STAR)])
     lines.append(f"星图: {'ok' if ok3 else 'fail'} {tail3}{' / ' + err3 if err3 else ''}")
 
-    lines.append(f"结果: {'全部成功' if (ok1 and ok2 and ok3) else '有失败，见上'}")
+    lines.append(f"结果: {'全部成功' if (ok1 and ok2 and ok3 and ok4) else '有失败，见上'}")
     with LOG.open("a", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
     print("\n".join(lines))

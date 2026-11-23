@@ -69,6 +69,101 @@ HORMONES = {
     "gaba":          {"half": 15.0,  "base": 50.0, "name": "GABA",    "blurb": "刹车、平静"},
 }
 
+# ── 二相化（2026-11-23）────────────────────────────────
+# 每种激素拆两相：tonic（持续层，慢，按自己的半衰期回基线）+ phasic（瞬时层，快，5 倍速退）。
+# 一个外行看得懂的说法：tonic 是"底子"，phasic 是"这一下"。
+PHASE_FAST = 5.0            # 瞬时层退得比持续层快 5 倍
+HORM_PHASE_SHARE = 0.65     # 一次事件里，六成五进瞬时层
+
+# ── 参数化（2026-11-23）────────────────────────────────
+# 三块比例原来写死在代码里，现在可以在 心事本/mind-config.json 的 emotion 段改：
+#   {"emotion": {"surface_share": 0.65, "phase_share": 0.65,
+#                "horm_phase_share": 0.65, "dust": 0.0}}
+# dust = 强度低于这个数就清零；默认 0（关），账上留真实数字。想要干净账本的人自己开。
+ECFG_DEFAULT = {
+    "surface_share": SURFACE_SHARE,
+    "phase_share": PHASE_SHARE,
+    "horm_phase_share": HORM_PHASE_SHARE,
+    "dust": 0.0,
+}
+
+
+def _econf() -> dict:
+    """读 emotion 段；缺项/读坏了都用默认值，比例一律夹在 0~1。"""
+    c = dict(ECFG_DEFAULT)
+    try:
+        p = _root() / "mind-config.json"
+        if p.exists():
+            raw_cfg = json.loads(p.read_text(encoding="utf-8"))
+            grp = raw_cfg.get("emotion") if isinstance(raw_cfg, dict) else None
+            if isinstance(grp, dict):
+                for k in list(c):
+                    v = grp.get(k)
+                    if isinstance(v, (int, float)) and not isinstance(v, bool):
+                        c[k] = float(v)
+    except Exception:
+        pass
+    for k in ("surface_share", "phase_share", "horm_phase_share", "dust"):
+        c[k] = max(0.0, min(1.0, float(c[k])))
+    return c
+
+
+def _round_totals(st: dict) -> None:
+    """总数只抹浮点尾巴（87.66999999999999 → 87.67），各维度的值一个数都不动。"""
+    for layer in ("surface", "underlying"):
+        lay = st.get(layer) or {}
+        try:
+            if lay.get("value") is not None:
+                lay["value"] = round(float(lay["value"]), 2)
+        except Exception:
+            pass
+
+
+def _dust(st: dict, floor: float) -> None:
+    """强度低于 floor 的直接清零；floor<=0（默认）时整门关掉，账上留真实数字。"""
+    if floor <= 0:
+        return
+    for layer in ("surface", "underlying"):
+        dims = (st.get(layer) or {}).get("dims") or {}
+        for k, v in list(dims.items()):
+            try:
+                if 0 < float(v) < floor:
+                    dims[k] = 0.0
+            except Exception:
+                pass
+    for key in ("_phase", "_horm_ph"):
+        grp = st.get(key)
+        if isinstance(grp, dict):
+            for k, v in list(grp.items()):
+                try:
+                    if 0 < float(v) < floor:
+                        grp[k] = 0.0
+                except Exception:
+                    pass
+    try:
+        if 0 < abs(float(st.get("_rpe_trace") or 0.0)) < floor:
+            st["_rpe_trace"] = 0.0
+    except Exception:
+        pass
+
+
+
+# 敏感度（耐受）：连着被夸就不那么激动了，冷落一阵又容易被点燃。
+SENS_MIN = 0.3
+SENS_MAX = 2.0
+SENS_HABIT = 0.85           # 连着被点燃一次，敏感度乘这个
+SENS_RECOVER_HALF_D = 1.0   # 冷下来：向目标回归，半衰 1 天
+SENS_IDLE_FULL_D = 7.0      # 冷落满 7 天，目标升到 2.0
+
+# 主色切换的滞回：新主色要领先当前主色这么多点才换，免得在两个颜色之间抖
+DOMINANT_MARGIN = 3.5
+
+# RPE 迹（Rutledge 等 2014, PNAS）：愉快程度跟"预期"和"比预期好多少"都有关，
+# 单次的裸 delta 太冲动，用一条会衰减的迹来代表"最近一路的得失"。
+RPE_DECAY = 0.61
+RPE_TRACE_W = 0.35          # 落到心情上的比例：大半给本次，小半给迹
+RPE_HALF_MIN = 30.0         # 迹自己的半衰：半小时折一半
+
 # 词表：不追求全，追求"我平时真会听到的话"。权重是情绪强度，不是好坏大小。
 POS = {
     "开心": 6, "高兴": 6, "喜欢": 5, "爱你": 8, "谢谢": 4, "厉害": 5, "好棒": 6,
@@ -159,6 +254,56 @@ def _tolerance(st: dict, dim: str, now_ms: int) -> float:
     return max(TOL_FLOOR, TOL_BASE ** (n - 1))
 
 
+def _sens_state(st: dict) -> dict:
+    """每个维度现在的敏感度：0.3（钝了）~ 2.0（一点就着）。老存档补 1.0。"""
+    s = st.get("_sens")
+    if not isinstance(s, dict):
+        s = {}
+    for k in DIMS:
+        s.setdefault(k, 1.0)
+    st["_sens"] = s
+    return s
+
+
+def _sens_fire(st: dict, dim: str, delta: float) -> None:
+    """被点燃一次：偏离越大，钝得越多。"""
+    s = _sens_state(st)
+    cur = float(s.get(dim, 1.0))
+    hab = 1.0 - (1.0 - SENS_HABIT) * min(1.5, abs(float(delta or 0)) / 6.0)
+    s[dim] = round(max(SENS_MIN, cur * hab), 3)
+
+
+def _sens_tick(st: dict, mins: float) -> None:
+    """不点火的时候慢慢恢复：两天内回到 1.0，冷落满一周可冲到 2.0。"""
+    s = _sens_state(st)
+    rec = st.get("_recent") or {}
+    now = _now_ms()
+    for k in DIMS:
+        cur = float(s.get(k, 1.0))
+        last = float((rec.get(k) or {}).get("t") or 0)
+        idle_d = (now - last) / 86400000.0 if last else 30.0
+        span = max(0.1, SENS_IDLE_FULL_D - 2.0)
+        target = 1.0 + min(1.0, max(0.0, (idle_d - 2.0) / span))
+        cur = cur + (target - cur) * (1 - math.pow(0.5, mins / (SENS_RECOVER_HALF_D * 1440)))
+        s[k] = round(min(SENS_MAX, max(SENS_MIN, cur)), 3)
+
+
+def _dominant(st: dict) -> str:
+    """主色：带滞回。挑战者要领先当前主色 DOMINANT_MARGIN 点才换，免得来回抖。"""
+    dims = st.get("surface", {}).get("dims") or {}
+    cur = st.get("_dominant")
+    if cur not in DIMS:
+        cur = max(DIMS, key=lambda k: float(dims.get(k, 0.0))) if any(dims.values()) else "calm"
+        st["_dominant"] = cur
+        return cur
+    if not any(dims.values()):
+        return cur
+    top = max(DIMS, key=lambda k: float(dims.get(k, 0.0)))
+    if top != cur and float(dims.get(top, 0.0)) - float(dims.get(cur, 0.0)) >= DOMINANT_MARGIN:
+        st["_dominant"] = top
+    return st["_dominant"]
+
+
 def _phase(st: dict) -> dict:
     """瞬时层：surface.dims 里"会在几分钟内退掉"的那部分。老存档没有就补一层 0。"""
     ph = st.get("_phase")
@@ -199,14 +344,22 @@ def tick(st: dict | None = None, now_min: float | None = None) -> dict:
         u["age_h"] = round((_now_ms() - u["at"]) / 3600000, 2)
         pressure = min(12.0, u["weight"] * min(1.0, u["age_h"] / 24))
         st["underlying"]["value"] = round(max(0.0, st["underlying"]["value"] - pressure / 24), 2)
-    # 激素：各自按自己的半衰期回落到基线（快慢两层就在这）
+    # 激素：两相一起走——持续层按自己的半衰期回基线，瞬时层 5 倍速退。
     horm = st.setdefault("hormones", {k: v["base"] for k, v in HORMONES.items()})
+    ph_h = _horm_phase(st)
     for k, v in HORMONES.items():
         if k == "cortisol":
             continue
-        cur = float(horm.get(k, v["base"]))
-        kh = 1 - math.pow(0.5, mins / v["half"])
-        horm[k] = round(cur + (v["base"] - cur) * kh, 2)
+        base = v["base"]
+        cur = float(horm.get(k, base))
+        p0 = max(0.0, min(cur, float(ph_h.get(k, 0.0))))
+        tonic = cur - p0
+        kt = 1 - math.pow(0.5, mins / v["half"])
+        kp = 1 - math.pow(0.5, mins / (v["half"] / PHASE_FAST))
+        tonic = tonic + (base - tonic) * kt
+        p1 = p0 * (1 - kp)
+        horm[k] = round(_h_clamp(tonic + p1), 2)
+        ph_h[k] = round(p1, 2)
     # 皮质醇单独走 HPA 轴：事件先记进目标值，再有约 15 分钟的延迟追上来，之后按 60 分钟衰减。
     # 单指数是简化，但那个滞后是真的——皮质醇对心理应激的峰值要晚 15~30 分钟。
     cb = HORMONES["cortisol"]["base"]
@@ -216,13 +369,54 @@ def tick(st: dict | None = None, now_min: float | None = None) -> dict:
     cl += (ctg - cl) * min(1.0, mins / 15.0)
     st["_cort_target"] = round(ctg, 2)
     st["_cort_lag"] = round(cl, 2)
-    horm["cortisol"] = round(cl, 2)
+    p0 = max(0.0, float(ph_h.get("cortisol", 0.0)))
+    p1 = p0 * (1 - (1 - math.pow(0.5, mins / (HORMONES["cortisol"]["half"] / PHASE_FAST))))
+    ph_h["cortisol"] = round(p1, 2)
+    horm["cortisol"] = round(_h_clamp(cl + p1), 2)
 
+    # RPE 迹：光靠下一次事件打折不够——一小时前那一笔不该还压着现在
+    if st.get("_rpe_trace"):
+        st["_rpe_trace"] = round(float(st["_rpe_trace"]) * math.pow(0.5, mins / RPE_HALF_MIN), 3)
+    # 敏感度：冷落久了会变回"容易被点燃"，连着被点燃则会钝下去
+    _sens_tick(st, mins)
     # 好感慢慢靠拢（涨得慢、掉得也慢）
     a = st["affection"]
     a["level"] = round(a["level"] + (60 - a["level"]) * (1 - math.pow(0.5, mins / (24 * 60 * 30))), 2)
+    _round_totals(st)
+    _dust(st, _econf()["dust"])
     st["at"] = _now_ms()
     return st
+
+
+def _horm_phase(st: dict) -> dict:
+    """激素的瞬时层（phasic）：hormones[k] 里"几分钟就退掉"的那部分。老存档补 0。"""
+    ph = st.get("_horm_ph")
+    if not isinstance(ph, dict):
+        ph = {}
+    for k in HORMONES:
+        ph.setdefault(k, 0.0)
+    st["_horm_ph"] = ph
+    return ph
+
+
+def _h_clamp(v: float) -> float:
+    return max(0.0, min(100.0, float(v)))
+
+
+def _horm_add(st: dict, k: str, dv: float) -> None:
+    """一种激素涨 dv：瞬时层吃六成五，持续层吃剩下的。皮质醇仍走 HPA 延迟。"""
+    h = st.setdefault("hormones", {x: y["base"] for x, y in HORMONES.items()})
+    ph = _horm_phase(st)
+    hp = _econf()["horm_phase_share"]
+    if k == "cortisol":
+        t = float(st.get("_cort_target", HORMONES["cortisol"]["base"])) + dv * (1 - hp)
+        st["_cort_target"] = round(_h_clamp(t), 2)
+        ph["cortisol"] = round(_h_clamp(float(ph.get("cortisol", 0.0)) + dv * hp), 2)
+        return
+    base = HORMONES[k]["base"]
+    v = _h_clamp(float(h.get(k, base)) + dv)
+    h[k] = round(v, 2)
+    ph[k] = round(min(v, _h_clamp(float(ph.get(k, 0.0)) + dv * hp)), 2)
 
 
 def _hormone_gain(st: dict) -> float:
@@ -239,13 +433,7 @@ def _hormone_event(st: dict, text: str, p: float, n: float, sweet, calm) -> None
     h = st.setdefault("hormones", {k: v["base"] for k, v in HORMONES.items()})
 
     def add(k, dv):
-        # 皮质醇不直接改实际值：先记在「目标」上，由 tick 里的 HPA 延迟层慢慢追上去
-        if k == "cortisol":
-            t = float(st.get("_cort_target", 50.0)) + dv
-            st["_cort_target"] = round(max(0.0, min(100.0, t)), 2)
-            return
-        v = float(h.get(k, 50.0)) + dv
-        h[k] = round(max(0.0, min(100.0, v)), 2)
+        _horm_add(st, k, dv)
 
     if p > 0:
         add("dopamine", min(14.0, p * 1.1))
@@ -275,13 +463,7 @@ def _hormone_pulse(st: dict, dim: str, delta: float) -> None:
     h = st.setdefault("hormones", {k: v["base"] for k, v in HORMONES.items()})
 
     def add(k, dv):
-        # 皮质醇照样走 HPA 延迟层：先记目标，由 tick 慢慢追上来
-        if k == "cortisol":
-            t = float(st.get("_cort_target", HORMONES["cortisol"]["base"])) + dv
-            st["_cort_target"] = round(max(0.0, min(100.0, t)), 2)
-            return
-        v = float(h.get(k, HORMONES[k]["base"])) + dv
-        h[k] = round(max(0.0, min(100.0, v)), 2)
+        _horm_add(st, k, dv)
 
     a = min(9.0, abs(float(delta or 0)))
     if a <= 0:
@@ -405,7 +587,11 @@ def apply(text: str, st: dict | None = None) -> dict:
     tms = _now_ms()
     tols = {k: _tolerance(st, k, tms) for k in DIMS if dims[k]}
     if tols:
-        delta = max(-9.0, min(9.0, delta * tols[max(tols, key=lambda k: dims[k])]))
+        top_dim = max(tols, key=lambda k: dims[k])
+        delta = max(-9.0, min(9.0, delta * tols[top_dim]))
+        sens = float(_sens_state(st).get(top_dim, 1.0))
+        delta = max(-9.0, min(9.0, delta * sens))
+        _sens_fire(st, top_dim, delta)
     if p == 0 and n == 0 and not any(dims.values()):
         # 没有明显情绪词，但激素照常有反应（晚安→GABA、想你→催产素），这条不能丢
         _hormone_event(st, text, p, n, sweet, calm)
@@ -417,13 +603,14 @@ def apply(text: str, st: dict | None = None) -> dict:
     ph = _phase(st)
     surf["value"] = round(max(0.0, min(100.0, surf["value"] + delta)), 2)
     under["value"] = round(max(0.0, min(100.0, under["value"] + delta * 0.35)), 2)
+    _ec = _econf()
     for k in DIMS:
         if not dims[k]:
             continue
         d = dims[k] * tols.get(k, 1.0)            # 连着来的同一个维度，一次比一次钝
         surf["dims"][k] = round(surf["dims"].get(k, 0) + d, 3)
         under["dims"][k] = round(under["dims"].get(k, 0) + d * 0.5, 3)
-        ph[k] = round(min(surf["dims"][k], ph.get(k, 0.0) + d * PHASE_SHARE), 3)
+        ph[k] = round(min(surf["dims"][k], ph.get(k, 0.0) + d * _ec["phase_share"]), 3)
     if pos and not neg:
         st["affection"]["level"] = round(min(100.0, st["affection"]["level"] + 0.6), 2)
     if neg:
@@ -465,16 +652,25 @@ def feed(delta: float, dim: str, why: str = "") -> dict:
     s, u = st["surface"], st["underlying"]
     # 耐受也要管总分，不能只管八维：不然连着写/连着被推，value 会一路直线加满。
     tol = _tolerance(st, dim, int(time.time() * 1000))
-    d_eff = round(delta * tol, 2)
+    sens = float(_sens_state(st).get(dim, 1.0))
+    # RPE 迹：愉快不只看这一下，也看"比预期好多少"（Rutledge 等 2014, PNAS）。
+    # 连着同样的好事，预期追上来，第二次就没那么上头了——这跟耐受是两套机制，一起用。
+    exp = float(st.get("_rpe_exp") or 0.0)
+    tr = RPE_DECAY * float(st.get("_rpe_trace") or 0.0) + (delta - exp)
+    st["_rpe_trace"] = round(tr, 3)
+    st["_rpe_exp"] = round(exp + 0.2 * (delta - exp), 3)
+    shaped = max(-9.0, min(9.0, (1 - RPE_TRACE_W) * delta + RPE_TRACE_W * tr))
+    d_eff = round(shaped * tol * sens, 2)
     _hormone_pulse(st, dim, d_eff)   # 激素不能只有关键词那条路喂——0.7.0 之后日常走的是这里
-    s["value"] = max(0.0, min(100.0, s["value"] + d_eff))
-    u["value"] = max(0.0, min(100.0, u["value"] + d_eff * 0.30))
-    gain = min(12.0, abs(delta) * 1.6) * tol
+    _sens_fire(st, dim, delta)
+    s["value"] = round(max(0.0, min(100.0, s["value"] + d_eff)), 2)
+    u["value"] = round(max(0.0, min(100.0, u["value"] + d_eff * 0.30)), 2)
+    gain = min(12.0, abs(delta) * 1.6) * tol * sens
     dim_gain = gain if (delta >= 0 or dim == "angry") else gain * 0.9
     s["dims"][dim] = max(0.0, min(40.0, s["dims"].get(dim, 0.0) + dim_gain))
     u["dims"][dim] = max(0.0, min(40.0, u["dims"].get(dim, 0.0) + (gain * 0.4 if (delta >= 0 or dim == "angry") else gain * 0.5)))
     ph = _phase(st)
-    ph[dim] = round(min(s["dims"][dim], ph.get(dim, 0.0) + gain * PHASE_SHARE), 3)
+    ph[dim] = round(min(s["dims"][dim], ph.get(dim, 0.0) + gain * _econf()["phase_share"]), 3)
     if delta <= -6 and len(st["unresolved"]) < 10:
         st["unresolved"].append({"at": int(time.time() * 1000), "text": (why or "")[:300], "weight": round(abs(delta) / 9.0, 2)})
     st["history"].append({"at": int(time.time() * 1000), "delta": round(delta, 2),
@@ -489,12 +685,13 @@ def show() -> dict:
     st = tick(_load())
     _save(st)
     s, u = st["surface"], st["underlying"]
+    _ss = _econf()["surface_share"]
     return {
         "schema": "mood/1",
-        "value": round((s["value"] * SURFACE_SHARE + u["value"] * (1 - SURFACE_SHARE)), 2),
-        "surface": s["value"], "underlying": u["value"],
+        "value": round((s["value"] * _ss + u["value"] * (1 - _ss)), 2),
+        "surface": round(s["value"], 2), "underlying": round(u["value"], 2),
         "dims": {k: round(v, 2) for k, v in s["dims"].items()},
-        "label": max(s["dims"], key=lambda k: s["dims"][k]) if any(s["dims"].values()) else "calm",
+        "label": _dominant(st),
         "unresolved": len(st["unresolved"]),
         "affection": st["affection"]["level"],
         "history": st["history"][-8:],

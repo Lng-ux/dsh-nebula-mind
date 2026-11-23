@@ -3,7 +3,8 @@
 """插件自己的路径约定：数据不放在安装目录里。
 
 NEBULA_HOME 默认 ~/.dsh/nebula-mind（和别的 DSH 插件一致），里面：
-    memory/     五本账（notes/summaries/thoughts/promises/tacts/profile/vectors/星图）
+    memory/     八本账（notes/summaries/thoughts/promises/tacts/profile/procedures/judgments）
+                + 索引（vectors/星图）
     logs/       日志
     cache/      向量模型等可再生的东西
 安装目录只放代码，升级覆盖不会碰数据。

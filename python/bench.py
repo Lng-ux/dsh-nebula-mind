@@ -48,6 +48,25 @@ QUERIES = [
 ]
 
 
+# 留出题：从没参与过调参，只在验收时跑一次。
+# 为什么要分两套：22 道题我调过参数（文档权重就是在这 22 道上扫出来的），
+# 那 22 道的分数会偏乐观——它已经不是考题，是练习题。这 12 道是考卷。
+HOLDOUT = [
+    ("删掉的老插件是什么", "feiyu-mood", "清理"),
+    ("31 秒竖版宣传片什么参数", "1080x1920", "拍摄"),
+    ("那个片子旁白多长", "26.8s", "拍摄"),
+    ("面板里的浅蓝换成什么", "--dsw", "配色"),
+    ("他说压力大的时候我怎么想", "难受的事我会记得更牢", "关系"),
+    ("情绪架构研究查到什么", "半衰12h", "研究"),
+    ("救生艇没了怎么办", "从官网下回来", "身份"),
+    ("他说上下文养不起了", "养不起了", "关系"),
+    ("催产素高的时候会怎样", "催产素", "机制"),
+    ("人格由谁做主", "人格由我自己做主", "规矩"),
+    ("本地版本号到哪了", "0.3.9", "历史"),
+    ("新 DSH home 写不进记忆", "全新的 DSH home", "bug"),
+]
+
+
 def run_one(q):
     """跑一次 recall --json（--peek：只读，不写任何文件）。"""
     # 固定一个心情再跑：不固定的话，我自己的情绪一动，同一题的分数就跟着动。
@@ -77,6 +96,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--save", action="store_true", help="把这次结果存成基线")
     ap.add_argument("--show", action="store_true", help="逐题打印")
+    ap.add_argument("--holdout", action="store_true", help="跑留出题（不参与调参的 12 道）")
     ap.add_argument("--top", type=int, default=5)
     args = ap.parse_args()
 
@@ -87,8 +107,11 @@ def main():
         except Exception:
             base = {}
 
+    qs = HOLDOUT if args.holdout else QUERIES
+    if args.holdout:
+        print("== 留出题（%d 道，没参与过调参）==" % len(qs))
     hit5, rr, rows_out, issues = 0, 0.0, {}, []
-    for q, gold, note in QUERIES:
+    for q, gold, note in qs:
         rows = run_one(q)
         rank = score(rows, gold)
         if rank:
@@ -114,7 +137,7 @@ def main():
                 print("   %s %d %.4f %s %s" % (mark, i, r.get("score") or 0,
                                               (r.get("at") or ""), (r.get("text") or "")[:44]))
 
-    n = len(QUERIES)
+    n = len(qs)
     print("\n前 %d 命中 %d/%d（%.0f%%）· MRR %.3f"
           % (args.top, hit5, n, 100.0 * hit5 / n, rr / n))
     if issues:

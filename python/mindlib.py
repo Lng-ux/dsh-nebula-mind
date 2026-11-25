@@ -18,6 +18,9 @@ import json
 import os
 from datetime import datetime
 
+# 记录格式版本：2026-11-25 加。老记录没有这个字段，读的时候按 1 处理。
+SCHEMA_VERSION = 1
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paths as _P  # noqa: E402
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -106,6 +109,7 @@ def age_days(at):
 def enrich(rec, default_via="我自己想的", pinned=False):
     """给一条记忆补上新字段；已经有值的保留。返回新 dict（不改原对象）。"""
     r = dict(rec)
+    r.setdefault("schema", SCHEMA_VERSION)
     at = r.get("at") or now()
     r.setdefault("at", at)
     r["imp"] = float(r.get("imp", 1.0 if pinned else 0.5))

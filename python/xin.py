@@ -37,6 +37,21 @@ EMO_Q = ("难过", "累", "烦", "难受", "委屈", "害怕", "担心", "生气
          "高兴", "想你", "孤单", "舍不得", "想哭", "崩溃", "焦虑", "心疼", "失落")
 
 
+def epoch(at: str) -> float:
+    """把 ISO 时间转成秒级时间戳。认得 Z / +08:00；不带时区的按本机时区解释。
+
+    以前用 time.mktime(time.strptime(at[:19], ...))——后缀（Z、偏移）被砍掉、
+    又强制按本地算，换台机器或改时区就会静默错位。
+    """
+    t = (at or "").strip()
+    if not t:
+        return 0.0
+    try:
+        return datetime.fromisoformat(t.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
+
+
 def ppr(seed: dict, adj: dict, damping: float = 0.5, iters: int = 8) -> dict:
     """Personalized PageRank：把「命中的记忆」当随机游走的起点，沿共现边扩散。
 
@@ -413,7 +428,8 @@ def cmd_sum(text):
     notes = own_notes()
     sums = read_jsonl("summaries.jsonl")
     up_to = max((n["id"] for n in notes), default=0)
-    r = append("summaries.jsonl", {"id": next_id(sums), "at": now(), "text": text, "upTo": up_to})
+    r = append("summaries.jsonl", {"id": next_id(sums), "at": now(), "text": text,
+                                    "upTo": up_to, "schema": 1})
     print("小结 #%d 收进 %d 条随手记" % (r["id"], len([n for n in notes if n["id"] <= up_to])))
 
 
@@ -673,7 +689,7 @@ def cmd_reflect(dry=False, quiet=False):
         else:
             row = {"id": next_id(old + made), "at": now(), "topic": k, "claim": claim,
                    "n": n, "conf": conf, "evidence": ev, "emo": emo, "ex": ex,
-                   "valid_to": None}
+                   "valid_to": None, "schema": 1}
             made.append(row)
         if not quiet:
             print("· %s（%d 条，置信 %.2f）" % (claim, n, conf))
@@ -1179,9 +1195,8 @@ def cmd_recall(query, n=5, hybrid=True, peek=False):
                 w = 2.0
             else:
                 try:
-                    ta = time.mktime(time.strptime(idx[ka]["at"][:19], "%Y-%m-%dT%H:%M:%S"))
-                    tb = time.mktime(time.strptime(idx[kb]["at"][:19], "%Y-%m-%dT%H:%M:%S"))
-                    if abs(ta - tb) <= 7200:
+                    ta, tb = epoch(idx[ka].get("at")), epoch(idx[kb].get("at"))
+                    if ta and tb and abs(ta - tb) <= 7200:
                         w = 1.0
                 except Exception:
                     pass
@@ -1200,6 +1215,13 @@ def cmd_recall(query, n=5, hybrid=True, peek=False):
             cap[_r] = _b
     rank_bm = {k: i for i, k in enumerate(sorted(bm, key=lambda x: -bm[x]))}
     rank_vec = {k: i for i, k in enumerate(sorted(vec, key=lambda x: -vec[x]))}
+    # 候选池：每路只留前 N 名再融合。实测（2026-11-25）：我们只有 200 条记忆，
+    # 截到 10/20/40/60 都会掉 2~3 题（22/22 → 19~20/22），**默认不截**。
+    # 想再试：NEBULA_POOL=20 python/bench.py 对比。
+    _POOL = int(os.environ.get("NEBULA_POOL", "0") or 0)
+    if _POOL > 0:
+        rank_bm = {k: r for k, r in rank_bm.items() if r < _POOL}
+        rank_vec = {k: r for k, r in rank_vec.items() if r < _POOL}
     K = cf["rrf_k"]
     seed = {}
     for k in set(rank_bm) | set(rank_vec):
@@ -1266,7 +1288,7 @@ def cmd_recall(query, n=5, hybrid=True, peek=False):
         # 新鲜度
         try:
             _age_src = d.get("age_at") or d["at"]
-            age = (time.time() - time.mktime(time.strptime(_age_src[:19], "%Y-%m-%dT%H:%M:%S"))) / 86400
+            age = (time.time() - epoch(_age_src)) / 86400
             age = max(0.0, age)
         except Exception:
             age = 0.0

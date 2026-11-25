@@ -25,6 +25,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import paths as _P  # noqa: E402  数据根只认这一个来源（NEBULA_MIND → NEBULA_HOME/memory）
 import time
+from datetime import datetime
 
 # 数据根跟 xin.py 用同一个来源（paths.MIND：NEBULA_MIND → NEBULA_HOME/memory），
 # 别再各算各的——以前这里按插件目录往上推四层，换了机器就画出一张空图。
@@ -101,7 +102,7 @@ def build():
                 continue
             at = r.get("at") or ""
             try:
-                ts = time.mktime(time.strptime(at[:19], "%Y-%m-%dT%H:%M:%S"))
+                ts = datetime.fromisoformat(at.replace("Z", "+00:00")).timestamp()
             except Exception:
                 ts = 0
             if name == "notes.jsonl" and r.get("superseded_by"):
@@ -308,6 +309,12 @@ const DPR = 1;           // 性能红线：高清会拖卡整机
 let W = 0, H = 0;
 let VERT = /[?&]v=1/.test(location.search);
 let LBLALL = /[?&]labels=1/.test(location.search);   // 截图/展示用：把大节点的文字也画出来
+const LABEL_CAP = 50;                                  // 屏幕上的标签上限（按大小取）
+const LABEL_OK = (() => {                              // labels=1 时允许出字的节点集合
+  const mem = DATA.nodes.filter(n => n.kind !== '日期' && !n.core && n.kind !== '分类');
+  mem.sort((a, b) => (b.rad || 0) - (a.rad || 0));
+  return new Set(mem.slice(0, LABEL_CAP).map(n => n.id));
+})();
 let HIDEUI0 = false;
 function resize(){
   if(VERT){
@@ -1022,7 +1029,10 @@ function draw(){
     const ebv = Number(ebk || 1);
     const efade = ebv + (1 - ebv) * (1 - kSim);
     if(lit === '0' && hop !== 0 && focus) { /* 焦点外：只留极淡的底 */ }
-    const aBase = (lit === '1' ? (0.022+0.05*Number(kv)) : 0.006) * efade;
+    // 强度分三档：弱边 0.08 / 中 0.18 / 强 0.5，别让 900 多条边一个透明度糊成一团
+    const _kw = Number(kv);
+    const _tier = _kw >= 1.2 ? 0.22 : (_kw >= 0.6 ? 0.10 : 0.05);
+    const aBase = (lit === '1' ? _tier : 0.02) * efade;
     ctx.lineWidth = 0.45 + 0.30*Number(kv);
     // 边：受“线条”开关控制
     if(!drawLines) continue;
@@ -1132,7 +1142,7 @@ function draw(){
     ctx.drawImage(spriteOf(n.color, false), x - cs/2, y - cs/2, cs, cs);
     ctx.globalCompositeOperation = 'source-over';
     ctx.globalAlpha = 1;
-    if(SHOWTEXT && inFocus && (n.core || n.pinned || n.kind==='分类' || n===hov || (LBLALL && n.kind!=='日期' && n.rad>=5.4))){
+    if(SHOWTEXT && inFocus && (n.core || n.pinned || n.kind==='分类' || n===hov || (LBLALL && n.kind!=='日期' && LABEL_OK.has(n.id)))){
       ctx.fillStyle='rgba(214,234,255,'+(0.55+0.4*s)+')';
       ctx.font=(n.core?'13px':(n.kind==='分类'?'12px':'11px'))+' "Microsoft YaHei",sans-serif';
       const label = n.core ? '总核' : (n.kind==='分类' ? n.text.replace(/[「」]/g,'') : n.text.slice(0,10));
@@ -1165,6 +1175,37 @@ step();
 """
 
 
+def check_integrity(recs, edges):
+    """图体检：悬空边、自环、重复边、孤儿节点。只读，不改行为。"""
+    ids = set(r["id"] for r in recs)
+    self_loops, dangling, dup = [], [], []
+    seen, deg = set(), {}
+    for e in edges:
+        s0, t0 = e.get("s"), e.get("t")
+        if s0 == t0:
+            self_loops.append(s0)
+        if s0 not in ids or t0 not in ids:
+            dangling.append([s0, t0])
+            continue
+        k = tuple(sorted((s0, t0)))
+        if k in seen:
+            dup.append(list(k))
+        seen.add(k)
+        deg[s0] = deg.get(s0, 0) + 1
+        deg[t0] = deg.get(t0, 0) + 1
+    orphans = [r["id"] for r in recs if r["id"] not in deg]
+    bad = len(self_loops) + len(dangling) + len(dup)
+    print(json.dumps({
+        "nodes": len(recs), "edges": len(edges),
+        "self_loop": len(self_loops), "dangling": len(dangling),
+        "duplicate": len(dup), "orphan": len(orphans),
+        "ok": bad == 0,
+        "sample": {"self_loop": self_loops[:3], "dangling": dangling[:3],
+                   "duplicate": dup[:3], "orphan": orphans[:5]},
+    }, ensure_ascii=False))
+    return 0 if bad == 0 else 1
+
+
 def _js_safe(data):
     """JSON 序列化后把 </ 转成 <\\/，防止记忆正文闭合 <script>。"""
     return json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
@@ -1174,12 +1215,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(MIND, "星图.html"))
     ap.add_argument("--open", action="store_true")
+    ap.add_argument("--integrity", action="store_true", help="只做图体检，不生成 HTML")
     a = ap.parse_args()
 
     recs, edges, iso = build()
     if not recs:
         print("心事本里还没有记录，先 xin.py add 记几条")
         return 1
+    if a.integrity:
+        return check_integrity(recs, edges)
 
     now = time.time()
     nodes = []

@@ -441,7 +441,12 @@ D  = 1 + 9 * (1 - imp)          # 重要度越低 = 越难记
 
 ## 六、情绪引擎：八维与七种递质
 
-[![心境面板](docs/shots/panel-mood.jpg)](docs/shots/panel-mood.jpg)
+[![心境 · 八维](docs/shots/panel-mood-8.jpg)](docs/shots/panel-mood-8.jpg)
+
+> 上图是按本机引擎数据画的八维图（v0.8.2 起面板也是八瓣；这张不是界面截图）。
+> 面板本体长什么样，见下面那张旧截图——它还是七瓣时代的，留着当版式参考。
+
+[![心境面板（旧版截图）](docs/shots/panel-mood.jpg)](docs/shots/panel-mood.jpg)
 
 ### 6.1 情绪从哪来：一手优先，判官兜底
 
@@ -960,3 +965,5 @@ python python/bench.py --holdout   # 考卷；基线只对 22 道练习题存
 ## License
 
 MIT
+
+图体检：`python python/star_map.py --integrity`（悬空边/自环/重复边/孤儿节点，0 问题才返回 0）。候选池想再试：`NEBULA_POOL=20 python/bench.py` 对比（我们实测都掉分，默认不截）。

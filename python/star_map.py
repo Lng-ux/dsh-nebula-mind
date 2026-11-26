@@ -1058,10 +1058,7 @@ function draw(){
     const ebv = Number(ebk || 1);
     const efade = ebv + (1 - ebv) * (1 - kSim);
     if(lit === '0' && hop !== 0 && focus) { /* 焦点外：只留极淡的底 */ }
-    // 强度分三档：弱边 0.08 / 中 0.18 / 强 0.5，别让 900 多条边一个透明度糊成一团
-    const _kw = Number(kv);
-    const _tier = _kw >= 1.2 ? 0.22 : (_kw >= 0.6 ? 0.10 : 0.05);
-    const aBase = (lit === '1' ? _tier : 0.02) * efade;
+    const aBase = (lit === '1' ? (0.022 + 0.05*Number(kv)) : 0.006) * efade;
     ctx.lineWidth = 0.45 + 0.30*Number(kv);
     // 边：受“线条”开关控制
     if(!drawLines) continue;
@@ -1071,8 +1068,9 @@ function draw(){
       ? 'rgba(255,180,120,' + (aBase*3.2).toFixed(3) + ')'
       : 'rgba(122,168,232,'+aBase+')';
     for(const e of arr){
-      const p=pos(e.a), q=pos(e.b);
-      const x1=W/2+p.x, y1=H/2+p.y, x2=W/2+q.x, y2=H/2+q.y;
+      const pa=pos(e.a), qa=pos(e.b);
+      const sa=520/(520+pa.z+400), sb=520/(520+qa.z+400);
+      const x1=W/2+pa.x*sa, y1=H/2+pa.y*sa, x2=W/2+qa.x*sb, y2=H/2+qa.y*sb;
       // 往中心收一点的弧线，比直尺画出来的顺眼
       const mx=(x1+x2)/2, my=(y1+y2)/2;
       const cx0=W/2+(mx-W/2)*0.855, cy0=H/2+(my-H/2)*0.855;
@@ -1085,8 +1083,9 @@ function draw(){
     ctx.beginPath(); ctx.strokeStyle='rgba(170,225,255,.55)'; ctx.lineWidth=1.1;
     for(const e of E){
       if(e.a!==hov && e.b!==hov) continue;
-      const p=pos(e.a), q=pos(e.b);
-      const x1=W/2+p.x, y1=H/2+p.y, x2=W/2+q.x, y2=H/2+q.y;
+      const pa=pos(e.a), qa=pos(e.b);
+      const sa=520/(520+pa.z+400), sb=520/(520+qa.z+400);
+      const x1=W/2+pa.x*sa, y1=H/2+pa.y*sa, x2=W/2+qa.x*sb, y2=H/2+qa.y*sb;
       const mx=(x1+x2)/2, my=(y1+y2)/2;
       ctx.moveTo(x1,y1); ctx.quadraticCurveTo(W/2+(mx-W/2)*0.855, H/2+(my-H/2)*0.855, x2,y2);
     }

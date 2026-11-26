@@ -566,6 +566,8 @@ CONF_DEFAULT = {
     "res_rel": 0.75,        # 相关性：候选里的词有多大比例出现在最近一天
     "res_cool_days": 7,     # 冷却：同一条 7 天内不再浮
     "res_day_cap": 2,       # 每天最多浮几条
+    "w_event": 0.45,        # 超边（事件）展开时，兄弟记忆拿种子分的多大比例
+
 
     "w_bm25": 0.40, "w_vec": 0.35, "w_graph": 0.15, "w_emo": 0.06,
     "ppr_damping": 0.5, "ppr_iters": 8,
@@ -883,6 +885,68 @@ def _res_recent(rows, days=1.0):
         except Exception:
             pass
     return toks
+
+
+def _events():
+    """读出有效的事件（超边）。members 是 [{"tag","id"}]。"""
+    out = []
+    inv = invalid_ids()
+    for r in read_jsonl("events.jsonl"):
+        if r.get("invalid_at"):
+            continue
+        mem = [m for m in (r.get("members") or [])
+               if (m.get("tag"), str(m.get("id"))) not in inv]
+        if len(mem) >= 2:
+            out.append({"id": r.get("id"), "title": r.get("title") or "",
+                        "at": r.get("at") or "", "members": mem})
+    return out
+
+
+def _event_index():
+    """key -> [事件 id]；事件 id -> {"title","keys"}"""
+    key2ev, ev = {}, {}
+    for e in _events():
+        keys = []
+        for m in e["members"]:
+            k = "%s#%s" % (m.get("tag"), id_num(m.get("id")))
+            keys.append(k)
+            key2ev.setdefault(k, []).append(e["id"])
+        ev[e["id"]] = {"title": e["title"], "keys": keys}
+    return key2ev, ev
+
+
+def cmd_event(title, members, show=False, rm=None):
+    """记一条事件（超边）：把几方记忆连成「这一整件事」。"""
+    if show:
+        rows = _events()
+        if not rows:
+            print("还没有事件。")
+        for e in rows:
+            print("#%s %s  %s" % (e["id"], e["title"],
+                                  " ".join("%s#%s" % (m.get("tag"), id_num(m.get("id"))) for m in e["members"])))
+        return
+    if rm is not None:
+        rows = read_jsonl("events.jsonl")
+        rows = [r for r in rows if str(r.get("id")) != str(rm)]
+        rewrite_jsonl("events.jsonl", rows)
+        print("已撤销事件 #%s（记忆本身没动）" % rm)
+        return
+    parsed = []
+    for part in str(members or "").split(","):
+        part = part.strip().replace("#", ":")
+        if not part:
+            continue
+        tag, _, rid = part.partition(":")
+        if not tag or not rid:
+            raise SystemExit("成员要写成 事实#12,念想#3 这种")
+        parsed.append({"tag": tag.strip(), "id": id_num(rid.strip())})
+    if len(parsed) < 2:
+        raise SystemExit("一条事件至少要连两方记忆")
+    rows = read_jsonl("events.jsonl")
+    nid = max([int(r.get("id") or 0) for r in rows] or [0]) + 1
+    rows.append({"id": nid, "at": now(), "title": title, "members": parsed})
+    rewrite_jsonl("events.jsonl", rows)
+    print("记下事件 #%d：%s（连 %d 方）" % (nid, title, len(parsed)))
 
 
 def _res_kw(text):
@@ -1519,6 +1583,12 @@ def cmd_recall(query, n=5, hybrid=True, peek=False, scope=None):
             sup[r["id"]] = r["superseded_by"]
 
     # ── 融合 ───────────────────────────────────────────
+    _key2ev, _ev_meta = _event_index()
+    _seed_set = set(seeds)
+    _evt_seed = {}
+    for _k in _seed_set:
+        for _eid in (_key2ev.get(_k) or []):
+            _evt_seed[_eid] = max(_evt_seed.get(_eid, 0.0), seed.get(_k, 0.0))
     out = []
     for k, d in idx.items():
         sc = seed.get(k, 0.0)
@@ -1526,6 +1596,18 @@ def cmd_recall(query, n=5, hybrid=True, peek=False, scope=None):
             sc += cf["w_graph"] * _hopf(k) / (K + rank_graph[k] + 1)
         if sc <= 0:
             continue
+        # 超边（事件）：同一件事里有种子，就把兄弟记忆拉上来——
+        # 两两的边表达不了「这一整件事」，事件层补上。
+        _evs = _key2ev.get(k) or []
+        for _eid in _evs:
+            _base = _evt_seed.get(_eid)
+            if _base:
+                if k in _seed_set:
+                    sc *= 1.02
+                else:
+                    sc = max(sc, _base * float(cf.get("w_event") or 0.45))
+                if d.get("event") is None and _ev_meta.get(_eid):
+                    d["event"] = _ev_meta[_eid]["title"]
         # 线索加成：这条是某条「判断」的证据，顺着判断找过来的，抬一点
         if _cue_ev and os.environ.get("NEBULA_NO_CUE") != "1" and str(id_num(d.get("id"))) in _cue_ev:
             sc *= float(os.environ.get("NEBULA_CUE_BOOST", "1.18"))
@@ -1619,7 +1701,8 @@ def cmd_recall(query, n=5, hybrid=True, peek=False, scope=None):
         for sc, d, k in picked:
             rows.append({"score": round(float(sc), 4), "tag": d["tag"], "id": d["id"],
                          "at": (d["at"] or "")[:10], "text": d["text"], "via": d.get("via") or "",
-                         "depth": int(d.get("depth") or 0), "pinned": bool(d.get("pinned"))})
+                         "depth": int(d.get("depth") or 0), "pinned": bool(d.get("pinned")),
+                         "event": d.get("event") or ""})
         _sc_out = {k: (sorted(v) if isinstance(v, set) else v) for k, v in _sc.items()}
         print(json.dumps({"query": query, "scope": _sc_out, "rows": rows}, ensure_ascii=False))
         return
@@ -1756,6 +1839,11 @@ def main():
     rf = sub.add_parser("reflect"); rf.add_argument("--dry", action="store_true")
     pc = sub.add_parser("consolidate"); pc.add_argument("--dry", action="store_true")
     pr = sub.add_parser("resurface"); pr.add_argument("--dry", action="store_true")
+    pev = sub.add_parser("event")
+    pev.add_argument("title", nargs="?", default=None)
+    pev.add_argument("members", nargs="?", default=None)
+    pev.add_argument("--list", action="store_true")
+    pev.add_argument("--rm", type=int, default=None)
     pinv = sub.add_parser("invalid")
     pinv.add_argument("tag", nargs="?", default=None, choices=["事实", "念想", "约定", "分寸", "过程"])
     pinv.add_argument("id", nargs="?", default=None)
@@ -1804,6 +1892,9 @@ def main():
         cmd_resurface(getattr(args, "dry", False))
     elif args.cmd == "sink":
         cmd_sink(args.tag, args.id)
+    elif args.cmd == "event":
+        cmd_event(args.title, args.members, show=getattr(args, "list", False),
+                  rm=getattr(args, "rm", None))
     elif args.cmd == "invalid":
         if getattr(args, "list", False):
             cmd_invalid("", "", show=True)

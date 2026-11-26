@@ -36,7 +36,7 @@ STOP = set("""的 了 就 也 都 还 和 跟 与 及 或 但 而 是 在 有 �
 可以 应该 需要 觉得 知道 看到 听过 说完 说清 说话""".split())
 
 # 三轨道：内圈稳定、中圈待办、外圈归档
-ORBIT = {"画像": 165, "事实": 240, "分寸": 300, "约定": 340, "念想": 420, "过程": 455, "分类": 150, "日期": 330}
+ORBIT = {"画像": 165, "事实": 240, "分寸": 300, "约定": 340, "念想": 420, "过程": 455, "分类": 150, "日期": 330, "事件": 195}
 
 
 def load_jsonl(name):
@@ -144,6 +144,35 @@ def build():
         for r in arr:
             edges.append({"s": did, "t": r["id"], "w": 0.55,
                           "why": "④同一天：这条是 %s 记下的（当天共 %d 条）" % (d, len(arr))})
+
+    # 事件星：一条事件（超边）把几方记忆连成「这一整件事」。
+    # 两两的边说不清「A 和 B 是同一件事的两面」，多一条事件星就说得清。
+    try:
+        evp = os.path.join(MIND, "events.jsonl")
+        if os.path.isfile(evp):
+            for line in open(evp, encoding="utf-8"):
+                line = line.strip()
+                if not line:
+                    continue
+                e = json.loads(line)
+                if e.get("invalid_at"):
+                    continue
+                members = e.get("members") or []
+                if len(members) < 2:
+                    continue
+                eid = "evt:%s" % e.get("id")
+                recs.append({
+                    "id": eid, "kind": "事件", "text": e.get("title") or "一件事",
+                    "t": 0, "tstr": (e.get("at") or "")[:16].replace("T", " "),
+                    "pinned": 0, "importance": 2, "src": "event", "key": [],
+                    "kw": set(), "event": True, "count": len(members),
+                })
+                for m in members:
+                    mid = "%s#%s" % (m.get("tag"), m.get("id"))
+                    edges.append({"s": eid, "t": mid, "w": 0.8,
+                                  "why": "⑤同一件事：%s" % (e.get("title") or "")})
+    except Exception:
+        pass
 
     # ① 内容引用：A 正文出现 B 的关键词（≥3 字的词才算，避免噪音）
     for a in recs:

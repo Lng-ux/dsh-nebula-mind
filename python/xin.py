@@ -567,6 +567,11 @@ CONF_DEFAULT = {
     "res_cool_days": 7,     # 冷却：同一条 7 天内不再浮
     "res_day_cap": 2,       # 每天最多浮几条
     "w_event": 0.45,        # 超边（事件）展开时，兄弟记忆拿种子分的多大比例
+    "evt_min_members": 3,
+    "evt_min_shared": 2,
+    "evt_max_df": 5,
+    "evt_window_days": 3,
+    "evt_cand_weight": 0.7,
 
 
     "w_bm25": 0.40, "w_vec": 0.35, "w_graph": 0.15, "w_emo": 0.06,
@@ -827,6 +832,14 @@ def cmd_consolidate(dry=False):
         except Exception as _e:
             print("（升华这一步没跑成：%s）" % _e)
 
+    if not dry:
+        try:
+            _made = _cand_events(dry=False)
+            if _made:
+                print("顺手建了 %d 条候选事件（共同的词把它们连在一起）" % _made)
+        except Exception as _e:
+            print("（候选事件这一步没跑成：%s）" % _e)
+
     line = "　".join("%s %d" % (M.LAYERS[k], v) for k, v in sorted(dist.items()))
     print("%s下沉 %d · 上浮 %d · 情绪拉回 %d\n%s" % (
         "（试跑）" if dry else "", sink, lift, shock, line))
@@ -837,6 +850,102 @@ def invalid_ids():
     for r in read_jsonl("invalid.jsonl"):
         out.add((r.get("tag") or "", str(r.get("id") or "")))
     return out
+
+
+
+def _evt_members_of(rows=None):
+    """已经进了哪条事件：{(tag,id)} 的集合，避免重复成组。"""
+    seen = set()
+    for e in _events():
+        for m in e.get("members") or []:
+            seen.add((m.get("tag"), str(m.get("id"))))
+    return seen
+
+
+def _cand_events(dry=False):
+    """按一个具体的关键词把最近几天的记录连成「候选事件」，不叫模型、零 token。
+
+    规则：窗口内、还没进过事件、该词在这批里出现 ≥ evt_min_members 次且 ≤ evt_max_df 次、
+    词长 ≥3 个字符（避免「qq」「只」「的」这类）；每晚最多建 evt_night_cap 条。
+    """
+    import collections
+    cf = conf()
+    win = float(cf.get("evt_window_days") or 3)
+    min_mem = int(cf.get("evt_min_members") or 3)
+    max_df = int(cf.get("evt_max_df") or 5)
+    cap = int(cf.get("evt_night_cap") or 2)
+    have = _evt_members_of()
+    now_ts = time.time()
+    pool = []
+    for _fn, tag, r in _all_rows():
+        key = (tag, str(r.get("id")))
+        if key in have or (tag or "") not in ("事实", "念想", "约定", "分寸", "过程"):
+            continue
+        age_d = (now_ts - epoch(r.get("age_at") or r.get("at") or "")) / 86400.0
+        if age_d > win:
+            continue
+        try:
+            kw = set(w for w in SEG.keywords(str(r.get("text") or r.get("content") or ""), 6)
+                     if len(str(w)) >= 3)
+        except Exception:
+            kw = set()
+        if kw:
+            pool.append((key, kw))
+    if os.environ.get("NEBULA_DEBUG"):
+        print("[cand] win=%s min=%s maxdf=%s cap=%s pool=%d" % (win, min_mem, max_df, cap, len(pool)))
+    if len(pool) < min_mem:
+        return 0
+    df = collections.Counter()
+    for _k, kw in pool:
+        for w in kw:
+            df[w] += 1
+    picks = []
+    for w, n in df.most_common():
+        if n < min_mem or n > max_df:
+            continue
+        picks.append((w, [k for k, kw in pool if w in kw]))
+    chosen = []
+    for w, mem in sorted(picks, key=lambda x: -len(x[1])):
+        s = set(mem)
+        if any(len(s & set(prev)) >= 2 for _w, prev in chosen):
+            continue
+        chosen.append((w, mem))
+        if len(chosen) >= cap:
+            break
+    if not chosen:
+        return 0
+    ev_rows = read_jsonl("events.jsonl")
+    nid = max([int(r.get("id") or 0) for r in ev_rows] or [0]) + 1
+    made = 0
+    for w, mem in chosen:
+        title = "「%s」这件事" % w
+        if dry:
+            print("（试跑）候选事件：%s —— %d 条" % (title, len(mem)))
+            made += 1
+            continue
+        ev_rows.append({"id": nid, "at": now(), "title": title,
+                        "members": [{"tag": t, "id": i} for t, i in mem],
+                        "candidate": True})
+        nid += 1
+        made += 1
+    if made and not dry:
+        rewrite_jsonl("events.jsonl", ev_rows)
+    return made
+
+
+def cmd_event_promote(rid):
+    """把候选事件转成正式事件（或标回候选）。"""
+    rows = read_jsonl("events.jsonl")
+    hit = None
+    for r in rows:
+        if str(r.get("id")) == str(rid):
+            hit = r
+            break
+    if not hit:
+        raise SystemExit("没有 #%s 这条事件" % rid)
+    hit["candidate"] = False
+    rewrite_jsonl("events.jsonl", rows)
+    print("事件 #%s 转正：%s" % (rid, hit.get("title")))
 
 
 def cmd_invalid(tag, rid, why="", undo=False, show=False):
@@ -1605,7 +1714,10 @@ def cmd_recall(query, n=5, hybrid=True, peek=False, scope=None):
                 if k in _seed_set:
                     sc *= 1.02
                 else:
-                    sc = max(sc, _base * float(cf.get("w_event") or 0.45))
+                    _w = float(cf.get("w_event") or 0.45)
+                    if (_ev_meta.get(_eid) or {}).get("candidate"):
+                        _w *= float(cf.get("evt_cand_weight") or 0.7)
+                    sc = max(sc, _base * _w)
                 if d.get("event") is None and _ev_meta.get(_eid):
                     d["event"] = _ev_meta[_eid]["title"]
         # 线索加成：这条是某条「判断」的证据，顺着判断找过来的，抬一点
@@ -1844,6 +1956,9 @@ def main():
     pev.add_argument("members", nargs="?", default=None)
     pev.add_argument("--list", action="store_true")
     pev.add_argument("--rm", type=int, default=None)
+    pev.add_argument("--promote", type=int, default=None)
+    pev.add_argument("--candidates", action="store_true")
+    pev.add_argument("--dry", action="store_true")
     pinv = sub.add_parser("invalid")
     pinv.add_argument("tag", nargs="?", default=None, choices=["事实", "念想", "约定", "分寸", "过程"])
     pinv.add_argument("id", nargs="?", default=None)
@@ -1893,8 +2008,14 @@ def main():
     elif args.cmd == "sink":
         cmd_sink(args.tag, args.id)
     elif args.cmd == "event":
-        cmd_event(args.title, args.members, show=getattr(args, "list", False),
-                  rm=getattr(args, "rm", None))
+        if getattr(args, "promote", None) is not None:
+            cmd_event_promote(args.promote)
+        elif getattr(args, "candidates", False):
+            n = _cand_events(dry=getattr(args, "dry", False))
+            print("候选事件：%d 条" % n)
+        else:
+            cmd_event(args.title, args.members, show=getattr(args, "list", False),
+                      rm=getattr(args, "rm", None))
     elif args.cmd == "invalid":
         if getattr(args, "list", False):
             cmd_invalid("", "", show=True)

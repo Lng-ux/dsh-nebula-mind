@@ -491,6 +491,17 @@ python python/xin.py event --rm 2        # 撤销第 2 条事件（记忆本身�
 - 星图里每条事件是一颗「事件星」，连到它的成员上（`evt:<id>`，轨道 195）。
 - 边界：**事件是手动连的**，不是从对话里自动抽的。自动抽需要模型判断「这几条是不是同一件事」，每轮都要花钱，先不做。
 
+**候选事件（零 token）**：夜里沉淀时会顺手看一眼最近 `evt_window_days`（默认 3）天的新记录，如果某个具体的关键词（长度 ≥3、出现过 `evt_min_members`~`evt_max_df` 次，默认 3~5）把至少 3 条连在一起，就自动建一条 `candidate: true` 的事件，标题是「「那个词」这件事」。候选事件照样参与召回展开，但权重打个折（`evt_cand_weight`，默认 0.7），免得瞎连的东西太响。
+
+```bash
+python python/xin.py event --candidates --dry   # 只看这一晚会连出什么，不写盘
+python python/xin.py event --list               # 候选和正式的都在，候选带标记
+python python/xin.py event --promote 7          # 看着靠谱就把 #7 转正
+```
+
+- 每晚最多建 `evt_night_cap`（默认 2）条；已经进过事件的记录不会重复成组。
+- 只有这几个词能连起来时，宁可不建——比硬凑强。
+
 ### 6.1 情绪从哪来：一手优先，判官兜底
 
 心情不是只有一个人在算。按顺序问三次：

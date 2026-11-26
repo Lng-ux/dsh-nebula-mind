@@ -6,10 +6,12 @@
 - **召回双向展开**：命中其中一方时，其余成员按 `w_event`（默认 0.45）× 种子分被拉回，行上标事件名；`recall --json` 多一个 `event` 字段。
 - **星图事件星**：`star_map.py` 读 `events.jsonl`，每条事件建一颗节点（`evt:<id>`，轨道 195）连到成员。
 - 自动抽事件（模型判断「是不是同一件事」）刻意不做：每轮都要花钱，先留手动。
+- **候选事件（零 token）**：夜里沉淀时按「同一个具体关键词连起 ≥3 条最近记录」自动建 `candidate: true` 的事件（每晚最多 2 条、不重复成组），参与展开但权重 ×0.7；`event --candidates --dry` 可预览、`event --promote <id>` 转正。配置项 `evt_window_days / evt_min_members / evt_max_df / evt_night_cap / evt_cand_weight`。
 
 **测试**
 
 - 新增 `tmp/test_event.py` 18 条：记/列/少于两方被拒、双向展开、成员 invalid 后失效、撤销 invalid 后恢复、星图出现事件节点、`--rm` 撤销后标记消失。
+- 新增 `tmp/test_cand.py` 12 条：关键词成组建候选、展开打标、重复跑不新增、`--dry` 不写盘、`--promote` 转正、互不相干的记录不被硬连。
 
 ---
 

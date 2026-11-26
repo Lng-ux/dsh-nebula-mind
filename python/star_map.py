@@ -1211,11 +1211,76 @@ def _js_safe(data):
     return json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
 
 
+def check_health(recs, edges):
+    """图健康诊断（只读）：hub 配额 ≤5%、巨型组件 <60%、分支比 σ∈[0.9,1.1]。
+
+    - hub：度 ≥ 节点数 5% 的节点（星图里就是「总核/分类核/日期星」那些）
+    - 巨型组件：最大连通分量占全部节点的比例
+    - 分支比：度分布的 σ/μ（越接近 1 越像随机图，太小=均匀，太大=巨头化）
+    """
+    n = len(recs)
+    ids = set(r["id"] for r in recs)
+    deg = {}
+    adj = {i: set() for i in ids}
+    for e in edges:
+        s0, t0 = e.get("s"), e.get("t")
+        if s0 not in ids or t0 not in ids:
+            continue
+        deg[s0] = deg.get(s0, 0) + 1
+        deg[t0] = deg.get(t0, 0) + 1
+        adj[s0].add(t0)
+        adj[t0].add(s0)
+
+    hub_line = max(1, int(round(n * 0.05)))
+    hubs = [i for i, d in deg.items() if d >= hub_line]
+    hub_ratio = len(hubs) / float(n) if n else 0.0
+
+    seen, comps = set(), []
+    for i in ids:
+        if i in seen:
+            continue
+        stack, cnt = [i], 0
+        seen.add(i)
+        while stack:
+            cur = stack.pop()
+            cnt += 1
+            for nb in adj[cur]:
+                if nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        comps.append(cnt)
+    giant = (max(comps) / float(n)) if comps else 0.0
+
+    vals = [deg.get(i, 0) for i in ids]
+    mu = (sum(vals) / float(n)) if n else 0.0
+    sd = (sum((v - mu) ** 2 for v in vals) / float(n)) ** 0.5 if n else 0.0
+    ratio = (sd / mu) if mu else 0.0
+
+    warn = []
+    if hub_ratio > 0.05:
+        warn.append("hub 太多：%d 个（%.1f%% > 5%%）" % (len(hubs), hub_ratio * 100))
+    if giant > 0.6:
+        warn.append("巨型组件 %.1f%%（> 60%%）" % (giant * 100))
+    if not (0.9 <= ratio <= 1.1):
+        warn.append("分支比 σ/μ = %.2f（目标 0.9~1.1）" % ratio)
+
+    out = {
+        "nodes": n, "edges": len(edges), "isolated": len(ids - set(deg)),
+        "hub_line": hub_line, "hubs": len(hubs), "hub_ratio": round(hub_ratio, 4),
+        "giant_ratio": round(giant, 4), "degree_mu": round(mu, 3),
+        "degree_sigma": round(sd, 3), "branch_ratio": round(ratio, 3),
+        "components": len(comps), "ok": not warn, "warn": warn,
+    }
+    print(json.dumps(out, ensure_ascii=False))
+    return 0 if not warn else 1
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=os.path.join(MIND, "星图.html"))
     ap.add_argument("--open", action="store_true")
     ap.add_argument("--integrity", action="store_true", help="只做图体检，不生成 HTML")
+    ap.add_argument("--health", action="store_true", help="只做图健康诊断（hub/巨型组件/分支比）")
     a = ap.parse_args()
 
     recs, edges, iso = build()
@@ -1224,6 +1289,8 @@ def main():
         return 1
     if a.integrity:
         return check_integrity(recs, edges)
+    if getattr(a, "health", False):
+        return check_health(recs, edges)
 
     now = time.time()
     nodes = []

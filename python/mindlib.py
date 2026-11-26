@@ -98,12 +98,21 @@ def depth_for(age_days, pinned=False):
     return 4
 
 
+_AT_FMTS = ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d")
+
+
 def age_days(at):
-    try:
-        t = datetime.strptime(at[:19], "%Y-%m-%dT%H:%M:%S")
-    except Exception:
-        return 0.0
-    return max(0.0, (datetime.now() - t).total_seconds() / 86400.0)
+    """离现在多少天。容忍没有秒的时间戳——解析失败会静默返回 0，
+    等于把「三个月前」当成「刚刚」（和 epoch() 那个 bug 同一类）。"""
+    s0 = str(at or "").strip()
+    for fmt in _AT_FMTS:
+        n = 19 if "%S" in fmt else 16
+        try:
+            t = datetime.strptime(s0[:n], fmt)
+            return max(0.0, (datetime.now() - t).total_seconds() / 86400.0)
+        except Exception:
+            continue
+    return 0.0
 
 
 def enrich(rec, default_via="我自己想的", pinned=False):

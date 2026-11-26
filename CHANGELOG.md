@@ -1,4 +1,28 @@
-## 未发布 · 先划范围再排序（2026-11-26）
+## 未发布 · 8.3 收尾 + 先划范围再排序（2026-11-26）
+
+**新增**
+
+- **浮起五道门**：相关性（候选关键词里出现在最近一天记录中的比例 ≥ `res_rel`，默认 0.75）、重要度（`imp*10 ≥ 7` 或 `A ≥ 0.5`）、冷却（`res_cool_days` 天）、配额（每天 `res_day_cap` 条）、**效用门**（上次浮起来两天内没被想起 → `imp` 降 0.05，记 `utility_fail`）。`resurface --dry` 会把每条被跳过卡在哪道门打出来。
+- **逻辑删除**：`xin.py invalid <tag> <id> [--why] [--undo] [--list]`，写 `invalid.jsonl`，召回按 `(tag, id)` 跳过；**文件永不物理删**，历史查询还能 `as-of`。
+- **图健康诊断**：`star_map.py --health` 输出 hub 配额、巨型组件占比、分支比 σ/μ，与 `--integrity` 互补。
+- **年龄解析加固**：`mindlib.age_days()` 现在容忍没有秒/只有日期的时间戳；以前解析失败静默返回 0，等于把很久以前当成刚刚。
+
+**修**
+
+- `cmd_resurface` 里先前用的 `read_config()` 不存在，改为 `conf()`；`invalid` 写盘改用 `read_jsonl` + `rewrite_jsonl`。
+
+
+**新功能**
+
+- 召回加了 scope-before-routing：查询里有层/时间/情绪的范围词时，先按硬谓词筛候选，再排序；没有范围词时行为不变；筛空了自动放宽并标注。
+- 新增 `--days / --depth / --dim / --no-scope`，以及 A/B 开关 `NEBULA_NO_SCOPE=1`。
+- `recall --json` 多一个 `scope` 字段，面板与回归台能看到这次筛了哪些范围。
+
+**修了一个自己埋的 bug**
+
+- `epoch()` 里用了 `datetime` 却没 import，异常被 except 吞掉、恒返回 0.0 —— 0.8.2 起「图邻接的时间窗」和「召回时的新鲜度」其实一直按「很久以前」在算。补上 import 后：练习题 MRR 0.784 → 0.845，留出题 0.875 → 0.917。
+
+### 先划范围再排序（scope-before-routing）
 
 **新功能**
 

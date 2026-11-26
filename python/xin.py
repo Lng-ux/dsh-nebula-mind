@@ -562,6 +562,11 @@ CONF_DEFAULT = {
 
     "L0_core": 1.0, "L1_hot": 0.85, "L2_warm": 0.55, "L3_deep": 0.28, "L4_attic": 0.06,
     "A_hot": 0.5, "A_warm": 0.3, "A_deep": 0.15,
+    # resurface 五道门（2026-11-26）
+    "res_rel": 0.75,        # 相关性：候选里的词有多大比例出现在最近一天
+    "res_cool_days": 7,     # 冷却：同一条 7 天内不再浮
+    "res_day_cap": 2,       # 每天最多浮几条
+
     "w_bm25": 0.40, "w_vec": 0.35, "w_graph": 0.15, "w_emo": 0.06,
     "ppr_damping": 0.5, "ppr_iters": 8,
     "rrf_k": 12, "graph_hop1": 0.30, "graph_hop2": 0.10,
@@ -824,53 +829,192 @@ def cmd_consolidate(dry=False):
     print("%s下沉 %d · 上浮 %d · 情绪拉回 %d\n%s" % (
         "（试跑）" if dry else "", sink, lift, shock, line))
 
-def cmd_resurface(dry=False):
-    """夜里从深水里捞一条上来。
+def invalid_ids():
+    """逻辑删除：invalid.jsonl 里记过的 (tag, id) 不再参与召回，但文件一个字节都不删。"""
+    out = set()
+    for r in read_jsonl("invalid.jsonl"):
+        out.add((r.get("tag") or "", str(r.get("id") or "")))
+    return out
 
-    不是随机：优先挑「沉得最深、又跟此刻心情同色」的那条；
-    挑中后 depth 上浮一层、年龄归零，并写 心事本/resurfaced.json（宿主会把它放进提示词）。
+
+def cmd_invalid(tag, rid, why="", undo=False, show=False):
+    """记一条「这条作废」或者「撤销作废」，不物理删。"""
+    if show:
+        rows = read_jsonl("invalid.jsonl")
+        if not rows:
+            print("没有作废记录。")
+        for r in rows:
+            print("%s #%s  %s  %s" % (r.get("tag"), r.get("id"), (r.get("at") or "")[:16], r.get("why") or ""))
+        return
+    if undo:
+        rows = [r for r in read_jsonl("invalid.jsonl")
+                if not ((r.get("tag") or "") == tag and str(r.get("id")) == str(rid))]
+        rewrite_jsonl("invalid.jsonl", rows)
+        print("已撤销作废：%s #%s" % (tag, rid))
+        return
+    rows = read_jsonl("invalid.jsonl")
+    rows.append({"tag": tag, "id": str(rid), "at": now(), "why": why})
+    rewrite_jsonl("invalid.jsonl", rows)
+    print("已记作废：%s #%s（文件没删，召回时跳过）" % (tag, rid))
+
+
+def _res_hist():
+    p = os.path.join(ROOT, "resurfaced-history.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            return json.load(f) or []
+    except Exception:
+        return []
+
+
+def _save_res_hist(hist):
+    p = os.path.join(ROOT, "resurfaced-history.json")
+    with open(p + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(hist[-300:], f, ensure_ascii=False)
+    os.replace(p + ".tmp", p)
+
+
+def _res_recent(rows, days=1.0):
+    toks = set()
+    for fn, tag, r in rows:
+        try:
+            if M.age_days(r.get("at") or "") <= days:
+                toks |= set(tokenize(r.get("text") or ""))
+        except Exception:
+            pass
+    return toks
+
+
+def _res_kw(text):
+    try:
+        return set(SEG.keywords(text or "", 6))
+    except Exception:
+        return set()
+
+
+def cmd_resurface(dry=False):
+    """浮起：相关性 / 重要度 / 冷却 / 配额 / 效用门，五道都过才浮。
+
+    - 相关性：候选的关键词里，有 ≥ res_rel 比例出现在最近一天的记录里
+    - 重要度：imp*10 ≥ 7 或 A ≥ 0.5（pinned、约定、分寸不参与）
+    - 冷却：同一条 res_cool_days 天内不再浮
+    - 配额：每天最多 res_day_cap 条
+    - 效用门：上次浮起来的，两天内没被想起 → imp 降 0.05（先结账也算）
     """
+    cf = conf()
     rows = _all_rows()
-    cur = mood_now() or {}
-    dims = cur.get("dims") or {}
+    hist = _res_hist()
+    seen = _seen_log()
+    pen = set()
+
+    # ① 先把上一次浮起的账结掉：有没有被接住
+    for h in hist:
+        if not h.get("pending"):
+            continue
+        rid = str(h.get("id") or "")
+        hit_at = seen.get(rid) or ""
+        if hit_at and hit_at > (h.get("at") or ""):
+            h["pending"] = False
+            h["reacted"] = True
+        elif M.age_days(h.get("at") or "") >= 2:
+            h["pending"] = False
+            h["reacted"] = False
+            pen.add((h.get("tag") or "", rid))
+
+    changed = False
+    for fn2, tag2, r2 in rows:
+        key = (tag2, str(r2.get("id") or ""))
+        if key in pen:
+            r2["imp"] = round(max(0.05, float(r2.get("imp") or 0) - 0.05), 3)
+            r2["utility_fail"] = int(r2.get("utility_fail") or 0) + 1
+            changed = True
+    if changed and not dry:
+        groups = {}
+        for fn2, tag2, r2 in rows:
+            groups.setdefault(fn2, []).append(r2)
+        for f2, arr in groups.items():
+            rewrite_jsonl(f2, arr)
+        _save_res_hist(hist)
+
+    # ② 相关性用关键词，不用逐字切
+    recent = set()
+    for fn2, tag2, r2 in rows:
+        try:
+            if M.age_days(r2.get("at") or "") <= 1.0:
+                recent |= _res_kw(r2.get("text") or "")
+        except Exception:
+            pass
+
+    day_cap = int(cf.get("res_day_cap") or 2)
+    today = time.strftime("%Y-%m-%d", time.localtime())
+    today_n = sum(1 for h in hist if (h.get("at") or "")[:10] == today)
+
+    dims = (mood_now() or {}).get("dims") or {}
     top = max(dims, key=lambda k: dims.get(k, 0)) if dims else None
 
-    best, best_score = None, -1.0
+    picks, skipped = [], []
     for fn, tag, r in rows:
+        rid = str(r.get("id") or "")
+        if (tag, rid) in invalid_ids():
+            continue
         if r.get("pinned") or tag in ("约定", "分寸"):
             continue
-        d = int(r.get("depth", 0))
-        if d < 3:
+        if int(r.get("depth", 0)) < 3:
+            skipped.append((tag, rid, "层不够 depth=%s" % r.get("depth")))
             continue
-        try:
-            age = M.age_days(r.get("at", ""))
-        except Exception:
-            age = 0.0
-        score = float(d) * 2.0 + min(age, 120) / 60.0 + (1.2 if (top and r.get("emo") == top) else 0.0)
-        if score > best_score:
-            best, best_score = (fn, tag, r), score
-    if not best:
-        print("没有沉在深处的东西，今晚不用捞。")
+        kw = _res_kw(r.get("text") or "")
+        rel = (len(kw & recent) / float(len(kw))) if kw else 1.0
+        if rel < float(cf.get("res_rel") or 0.75):
+            skipped.append((tag, rid, "相关性 %.2f（%s）" % (rel, "/".join(sorted(kw)[:4]))))
+            continue
+        imp10 = float(r.get("imp") or 0) * 10
+        A = float(r.get("A") or 0)
+        if not (imp10 >= 7 or A >= 0.5):
+            skipped.append((tag, rid, "重要度 %.2f/%.2f" % (imp10, A)))
+            continue
+        last = max([h.get("at") or "" for h in hist if str(h.get("id")) == rid] or [""])
+        if last and M.age_days(last) < float(cf.get("res_cool_days") or 7):
+            skipped.append((tag, rid, "冷却中"))
+            continue
+        score = float(r.get("depth", 3)) * 2.0 + min(M.age_days(r.get("at") or ""), 120) / 60.0
+        if top and r.get("emo") == top:
+            score += 1.2
+        picks.append((score, fn, tag, r))
+
+    head = "跳过 %d 条" % len(skipped)
+    if skipped:
+        head += "：" + "；".join("%s #%s %s" % x for x in skipped[:4])
+
+    if today_n >= day_cap:
+        print("今天已经浮过 %d 条了（上限 %d），今晚不浮。%s" % (today_n, day_cap, head))
         return
-    fn, tag, r = best
+    if not picks:
+        print("没有能过五道门的。%s" % head)
+        return
+
+    picks.sort(key=lambda x: -x[0])
+    score, fn, tag, r = picks[0]
+    rid = str(r.get("id") or "")
     r["depth"] = max(2, int(r.get("depth", 3)) - 1)
     r["last_hit"] = now()
     r["resurfaced_at"] = now()
-    if not dry:
-        rows_all = [x[2] for x in rows]
-        groups = {}
-        for f2, t2, r2 in rows:
-            groups.setdefault(f2, []).append(r2)
-        for f2, arr in groups.items():
-            for r2 in arr:
-                r2.pop("_fn", None)
-            rewrite_jsonl(f2, arr)
-        payload = {"tag": tag, "id": r.get("id") or "", "text": r.get("text", ""), "at": now()}
-        _rp = os.path.join(ROOT, "resurfaced.json")
-        with open(_rp + ".tmp", "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False)
-        os.replace(_rp + ".tmp", _rp)
-    print("今晚浮起来的一条（%s）：%s" % (tag, r.get("text", "")[:120]))
+    hist.append({"tag": tag, "id": rid, "at": now(), "pending": True})
+    print("今晚浮起来的一条（%s #%s，五道门都过）：%s ｜ %s"
+          % (tag, rid, (r.get("text") or "")[:120], head))
+    if dry:
+        return
+
+    groups = {}
+    for fn2, tag2, r2 in rows:
+        groups.setdefault(fn2, []).append(r2)
+    for f2, arr in groups.items():
+        rewrite_jsonl(f2, arr)
+    _save_res_hist(hist)
+    payload = {"tag": tag, "id": rid, "text": r.get("text", ""), "at": now()}
+    _rp = os.path.join(ROOT, "resurfaced.json")
+    with open(_rp + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    os.replace(_rp + ".tmp", _rp)
 
 
 def cmd_sink(tag, rid):
@@ -1182,6 +1326,10 @@ def cmd_recall(query, n=5, hybrid=True, peek=False, scope=None):
                          "depth": int(r.get("depth") or 0),
                          "stab": _stab_eff(*_stab_of(r, _sl)),
                          "pinned": bool(r.get("pinned"))})
+    _inv = invalid_ids()
+    if _inv:
+        docs = [d for d in docs if (d.get("tag"), str(d.get("id"))) not in _inv]
+
     # 两个开关只为回归台做 A/B：NEBULA_NO_JUDGE=1 当判断层不存在，
     # NEBULA_NO_CUE=1 关掉线索加成。正式跑不设这两个变量。
     # 判断行只在这个查询确实跟它的主题有关时才上场——否则它会挤掉真正的原文。
@@ -1608,6 +1756,12 @@ def main():
     rf = sub.add_parser("reflect"); rf.add_argument("--dry", action="store_true")
     pc = sub.add_parser("consolidate"); pc.add_argument("--dry", action="store_true")
     pr = sub.add_parser("resurface"); pr.add_argument("--dry", action="store_true")
+    pinv = sub.add_parser("invalid")
+    pinv.add_argument("tag", nargs="?", default=None, choices=["事实", "念想", "约定", "分寸", "过程"])
+    pinv.add_argument("id", nargs="?", default=None)
+    pinv.add_argument("--why", default="")
+    pinv.add_argument("--undo", action="store_true")
+    pinv.add_argument("--list", action="store_true")
     ps = sub.add_parser("sink"); ps.add_argument("tag", choices=["事实", "念想", "约定", "分寸", "过程"]); ps.add_argument("id", type=int)
     args = ap.parse_args()
 
@@ -1650,6 +1804,11 @@ def main():
         cmd_resurface(getattr(args, "dry", False))
     elif args.cmd == "sink":
         cmd_sink(args.tag, args.id)
+    elif args.cmd == "invalid":
+        if getattr(args, "list", False):
+            cmd_invalid("", "", show=True)
+        else:
+            cmd_invalid(args.tag, args.id, args.why, undo=args.undo)
 
 
 if __name__ == "__main__":

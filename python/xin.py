@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -1079,7 +1080,92 @@ def longest_run(query, text, cap=6):
     return 0
 
 
-def cmd_recall(query, n=5, hybrid=True, peek=False):
+_SCOPE_DEPTH = {"核心": {0}, "热层以上": {0, 1}, "热": {1}, "温": {2},
+                "深水": {3}, "阁楼": {4}}
+_SCOPE_DIM = {"开心": "happy", "高兴": "happy", "平静": "calm", "安静": "calm",
+              "甜": "sweet", "心疼": "heartache", "难过": "sad", "伤心": "sad",
+              "担心": "worry", "焦虑": "worry", "生气": "angry", "恼火": "angry",
+              "吃醋": "jealous", "嫉妒": "jealous"}
+_CN_NUM = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+           "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+_SCOPE_FIXED_DAYS = (("前天", 3), ("昨天", 2), ("今天", 1), ("这几天", 7),
+                     ("这周", 7), ("本周", 7), ("上周", 7), ("上个星期", 7),
+                     ("这个月", 31), ("本月", 31), ("上个月", 31),
+                     ("今年", 365), ("去年", 365))
+
+
+def _cn_num(s):
+    if s.isdigit():
+        return int(s)
+    if s in _CN_NUM:
+        return _CN_NUM[s]
+    if len(s) == 2 and s[0] == "十":
+        return 10 + _CN_NUM.get(s[1], 0)
+    if len(s) == 2 and s[1] == "十":
+        return _CN_NUM.get(s[0], 0) * 10
+    if len(s) == 3 and s[1] == "十":
+        return _CN_NUM.get(s[0], 0) * 10 + _CN_NUM.get(s[2], 0)
+    return None
+
+
+def scope_of(query):
+    """从查询里读硬谓词：{days, depths, dim}，没有就是空 dict。"""
+    q = query or ""
+    sc = {}
+    m = re.search(r"最近\s*([0-9一二两三四五六七八九十]+)\s*(天|日|周|星期|个月|月|年)", q)
+    if m:
+        n = _cn_num(m.group(1))
+        unit = m.group(2)
+        if n:
+            sc["days"] = n * (1 if unit in ("天", "日") else
+                              7 if unit in ("周", "星期") else
+                              31 if unit in ("个月", "月") else 365)
+    if "days" not in sc:
+        for w, d in _SCOPE_FIXED_DAYS:
+            if w in q:
+                sc["days"] = d
+                break
+    for w in sorted(_SCOPE_DEPTH, key=len, reverse=True):
+        if w in q:
+            sc["depths"] = set(_SCOPE_DEPTH[w])
+            break
+    for w in sorted(_SCOPE_DIM, key=len, reverse=True):
+        if w in q:
+            sc["dim"] = _SCOPE_DIM[w]
+            break
+    return sc
+
+
+def scope_label(sc):
+    bits = []
+    if sc.get("days"):
+        bits.append("最近 %d 天" % int(sc["days"]))
+    if sc.get("depths"):
+        bits.append("/".join(M.LAYERS[d] for d in sorted(sc["depths"])) + " 层")
+    if sc.get("dim"):
+        bits.append("情绪 " + sc["dim"])
+    if sc.get("relaxed"):
+        bits.append("（范围内没有，已放宽）")
+    return " · ".join(bits)
+
+
+def in_scope(d, sc, now=None):
+    """一条候选是否满足硬谓词。"""
+    now = time.time() if now is None else now
+    if sc.get("days"):
+        at = epoch(d.get("age_at") or d.get("at") or "")
+        if not at or now - at > sc["days"] * 86400:
+            return False
+    if sc.get("depths") is not None:
+        if int(d.get("depth") or 0) not in sc["depths"]:
+            return False
+    if sc.get("dim"):
+        if (d.get("emo") or "") != sc["dim"]:
+            return False
+    return True
+
+
+def cmd_recall(query, n=5, hybrid=True, peek=False, scope=None):
     """翻旧账：三路召回（BM25 / BGE / 图扩散 PPR）按 RRF 融合，情绪作调制乘子。"""
     docs = []
     _sl = _stab_log()
@@ -1120,6 +1206,21 @@ def cmd_recall(query, n=5, hybrid=True, peek=False):
     if not docs:
         print("心事本还是空的。")
         return
+
+    # ── scope-before-routing：先按硬谓词缩候选，再排序 ──
+    # 依据 ShardMemo：先筛再排，比让低层/无关记忆靠权重沉下去更有效。
+    _sc = dict(scope or {})
+    if not _sc and os.environ.get("NEBULA_NO_SCOPE") != "1":
+        _sc = scope_of(query)
+    if _sc:
+        _kept = [d for d in docs if in_scope(d, _sc)]
+        if _kept:
+            if len(_kept) < len(docs):
+                _sc["kept"] = len(_kept)
+                _sc["total"] = len(docs)
+            docs = _kept
+        else:
+            _sc["relaxed"] = True
 
     # ── 线索式检索：先问「这件事有没有一条判断」，有的话顺着它的证据找 ──
     # MemoRAG 的思路：一份长记忆先给个方向，再去里面捞细节；不是每次都从零扫。
@@ -1371,8 +1472,12 @@ def cmd_recall(query, n=5, hybrid=True, peek=False):
             rows.append({"score": round(float(sc), 4), "tag": d["tag"], "id": d["id"],
                          "at": (d["at"] or "")[:10], "text": d["text"], "via": d.get("via") or "",
                          "depth": int(d.get("depth") or 0), "pinned": bool(d.get("pinned"))})
-        print(json.dumps({"query": query, "rows": rows}, ensure_ascii=False))
+        _sc_out = {k: (sorted(v) if isinstance(v, set) else v) for k, v in _sc.items()}
+        print(json.dumps({"query": query, "scope": _sc_out, "rows": rows}, ensure_ascii=False))
         return
+
+    if _sc:
+        print("范围：%s" % scope_label(_sc))
 
     for sc, d, k in picked:
         tags = []
@@ -1494,6 +1599,10 @@ def main():
     r = sub.add_parser("recall"); r.add_argument("query"); r.add_argument("--n", type=int, default=5)
     r.add_argument("--kw", action="store_true", help="只用关键词，不算向量（做对照）")
     r.add_argument("--json", action="store_true", help="输出 JSON（给回归台、HUD 用）")
+    r.add_argument("--days", type=int, default=None, help="只看最近 N 天")
+    r.add_argument("--depth", default=None, help="只看这些层，逗号分隔的 0~4")
+    r.add_argument("--dim", default=None, help="只看某种情绪色，如 sad")
+    r.add_argument("--no-scope", action="store_true", help="关掉查询谓词（A/B 用）")
     r.add_argument("--peek", action="store_true",
                    help="只翻账：不记「被想起来」、不撑牢固度、不写任何文件（面板搜索框用）")
     rf = sub.add_parser("reflect"); rf.add_argument("--dry", action="store_true")
@@ -1523,7 +1632,16 @@ def main():
     elif args.cmd == "recall":
         global JSON_OUT
         JSON_OUT = bool(getattr(args, "json", False))
-        cmd_recall(args.query, args.n, hybrid=not args.kw, peek=getattr(args, "peek", False))
+        _scope = {}
+        if not getattr(args, "no_scope", False):
+            if getattr(args, "days", None):
+                _scope["days"] = args.days
+            if getattr(args, "depth", None):
+                _scope["depths"] = {int(x) for x in args.depth.split(",") if x.strip()}
+            if getattr(args, "dim", None):
+                _scope["dim"] = args.dim
+        cmd_recall(args.query, args.n, hybrid=not args.kw,
+                   peek=getattr(args, "peek", False), scope=_scope or None)
     elif args.cmd == "reflect":
         cmd_reflect(args.dry)
     elif args.cmd == "consolidate":

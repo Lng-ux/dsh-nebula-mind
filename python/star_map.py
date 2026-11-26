@@ -36,7 +36,7 @@ STOP = set("""的 了 就 也 都 还 和 跟 与 及 或 但 而 是 在 有 �
 可以 应该 需要 觉得 知道 看到 听过 说完 说清 说话""".split())
 
 # 三轨道：内圈稳定、中圈待办、外圈归档
-ORBIT = {"画像": 165, "事实": 240, "分寸": 300, "约定": 340, "念想": 420, "过程": 455, "分类": 150, "日期": 330, "事件": 195}
+ORBIT = {"画像": 165, "事实": 240, "分寸": 300, "约定": 340, "念想": 420, "过程": 455, "分类": 150, "日期": 330, "事件": 195, "判断": 205}
 
 
 def load_jsonl(name):
@@ -171,6 +171,38 @@ def build():
                     mid = "%s#%s" % (m.get("tag"), m.get("id"))
                     edges.append({"s": eid, "t": mid, "w": 0.8,
                                   "why": "⑤同一件事：%s" % (e.get("title") or "")})
+    except Exception:
+        pass
+
+    # 判断星：夜里从几条事实压出来的结论，画成挂在证据旁边的小卫星（细线连回原文）。
+    try:
+        jp = os.path.join(MIND, "judgments.jsonl")
+        if os.path.isfile(jp):
+            now_s = time.strftime("%Y-%m-%d %H:%M:%S")
+            for line in open(jp, encoding="utf-8"):
+                line = line.strip()
+                if not line:
+                    continue
+                j = json.loads(line)
+                vt = (j.get("valid_to") or "").strip()
+                if vt and vt < now_s:
+                    continue
+                ev = [int(x) for x in (j.get("evidence") or []) if str(x).isdigit()]
+                if not ev:
+                    continue
+                jid = "jdg:%s" % j.get("id")
+                recs.append({
+                    "id": jid, "kind": "判断", "text": j.get("claim") or "",
+                    "t": 0, "tstr": (j.get("at") or "")[:16].replace("T", " "),
+                    "pinned": 0, "importance": 1, "src": "judgment",
+                    "key": chips_of(j.get("claim") or "", 14),
+                    "chips": chips_of(j.get("claim") or "", 8),
+                    "kw": set(chips_of(j.get("claim") or "", 14)),
+                    "judgment": True,
+                })
+                for rid in ev:
+                    edges.append({"s": jid, "t": "事实#%s" % rid, "w": 0.35,
+                                  "why": "⑦判断：从这 %d 条里压出来的" % len(ev)})
     except Exception:
         pass
 

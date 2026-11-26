@@ -572,6 +572,8 @@ CONF_DEFAULT = {
     "evt_max_df": 5,
     "evt_window_days": 3,
     "evt_cand_weight": 0.7,
+    "evt_night_cap": 2,
+    "evt_auto_promote_members": 5,
 
 
     "w_bm25": 0.40, "w_vec": 0.35, "w_graph": 0.15, "w_emo": 0.06,
@@ -835,6 +837,9 @@ def cmd_consolidate(dry=False):
     if not dry:
         try:
             _made = _cand_events(dry=False)
+            _promoted = _auto_promote()
+            if _promoted:
+                print("[事件] 自动转正 %d 条" % _promoted)
             if _made:
                 print("顺手建了 %d 条候选事件（共同的词把它们连在一起）" % _made)
         except Exception as _e:
@@ -925,12 +930,28 @@ def _cand_events(dry=False):
             continue
         ev_rows.append({"id": nid, "at": now(), "title": title,
                         "members": [{"tag": t, "id": i} for t, i in mem],
-                        "candidate": True})
+                        "candidate": len(mem) < int(cf.get("evt_auto_promote_members") or 5)})
         nid += 1
         made += 1
     if made and not dry:
         rewrite_jsonl("events.jsonl", ev_rows)
     return made
+
+
+def _auto_promote():
+    """够大的候选项自己转正：成员数 >= evt_auto_promote_members 就不再算候选。"""
+    cf = conf()
+    promo = int(cf.get("evt_auto_promote_members") or 5)
+    rows = read_jsonl("events.jsonl")
+    n = 0
+    for r in rows:
+        if r.get("candidate") and len(r.get("members") or []) >= promo:
+            r["candidate"] = False
+            r["promoted_at"] = now()
+            n += 1
+    if n:
+        rewrite_jsonl("events.jsonl", rows)
+    return n
 
 
 def cmd_event_promote(rid):

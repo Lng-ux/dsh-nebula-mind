@@ -7,6 +7,7 @@
 - **星图事件星**：`star_map.py` 读 `events.jsonl`，每条事件建一颗节点（`evt:<id>`，轨道 195）连到成员。
 - 自动抽事件（模型判断「是不是同一件事」）刻意不做：每轮都要花钱，先留手动。
 - **候选事件（零 token）**：夜里沉淀时按「同一个具体关键词连起 ≥3 条最近记录」自动建 `candidate: true` 的事件（每晚最多 2 条、不重复成组），参与展开但权重 ×0.7；`event --candidates --dry` 可预览、`event --promote <id>` 转正。配置项 `evt_window_days / evt_min_members / evt_max_df / evt_night_cap / evt_cand_weight`。
+- **候选自动转正**：成员数 ≥ `evt_auto_promote_members`（默认 5）的候选在同一晚自动转正，日常不需要任何手动命令；手动 `--promote` / `--rm` 只当修正手段。
 
 **测试**
 

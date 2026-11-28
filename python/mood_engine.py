@@ -155,6 +155,14 @@ SENS_HABIT = 0.85           # 连着被点燃一次，敏感度乘这个
 SENS_RECOVER_HALF_D = 1.0   # 冷下来：向目标回归，半衰 1 天
 SENS_IDLE_FULL_D = 7.0      # 冷落满 7 天，目标升到 2.0
 
+# 激素的受体敏感度：八维有耐受，激素以前没有——连着被夸，多巴胺就一直亮着。
+# 同一套思路，但起点高、掉得慢（激素本来就是慢变量，别一晚上就钝掉）。
+HSENS_MIN = 0.4
+HSENS_MAX = 1.5
+HSENS_HABIT = 0.93          # 连着被喂一次，敏感度乘这个
+HSENS_DOSE = 16.0           # 多大的量算"喂满一次"（参考皮质醇单次上限）
+HSENS_RECOVER_HALF_D = 1.0  # 不喂的时候向 1.0 回归，半衰 1 天
+
 # 主色切换的滞回：新主色要领先当前主色这么多点才换，免得在两个颜色之间抖
 DOMINANT_MARGIN = 3.5
 
@@ -288,6 +296,34 @@ def _sens_tick(st: dict, mins: float) -> None:
         s[k] = round(min(SENS_MAX, max(SENS_MIN, cur)), 3)
 
 
+def _hsens_state(st: dict) -> dict:
+    """每种激素现在的受体敏感度：0.4（钝了）~ 1.5（一喂就响）。老存档补 1.0。"""
+    s = st.get("_h_sens")
+    if not isinstance(s, dict):
+        s = {}
+    for k in HORMONES:
+        s.setdefault(k, 1.0)
+    st["_h_sens"] = s
+    return s
+
+
+def _hsens_fire(st: dict, h: str, dv: float) -> None:
+    """被喂一次：量越大钝得越多。八维那边是 /6，激素量大，用 HSENS_DOSE 归一。"""
+    s = _hsens_state(st)
+    cur = float(s.get(h, 1.0))
+    hab = 1.0 - (1.0 - HSENS_HABIT) * min(1.0, abs(float(dv or 0)) / HSENS_DOSE)
+    s[h] = round(max(HSENS_MIN, cur * hab), 3)
+
+
+def _hsens_tick(st: dict, mins: float) -> None:
+    """不喂的时候慢慢回到 1.0（激素不建模「冷落就更容易被点燃」，那套留给八维）。"""
+    s = _hsens_state(st)
+    for k in HORMONES:
+        cur = float(s.get(k, 1.0))
+        cur = cur + (1.0 - cur) * (1 - math.pow(0.5, mins / (HSENS_RECOVER_HALF_D * 1440)))
+        s[k] = round(min(HSENS_MAX, max(HSENS_MIN, cur)), 3)
+
+
 def _dominant(st: dict) -> str:
     """主色：带滞回。挑战者要领先当前主色 DOMINANT_MARGIN 点才换，免得来回抖。"""
     dims = st.get("surface", {}).get("dims") or {}
@@ -379,6 +415,7 @@ def tick(st: dict | None = None, now_min: float | None = None) -> dict:
         st["_rpe_trace"] = round(float(st["_rpe_trace"]) * math.pow(0.5, mins / RPE_HALF_MIN), 3)
     # 敏感度：冷落久了会变回"容易被点燃"，连着被点燃则会钝下去
     _sens_tick(st, mins)
+    _hsens_tick(st, mins)
     # 好感慢慢靠拢（涨得慢、掉得也慢）
     a = st["affection"]
     a["level"] = round(a["level"] + (60 - a["level"]) * (1 - math.pow(0.5, mins / (24 * 60 * 30))), 2)
@@ -408,6 +445,10 @@ def _horm_add(st: dict, k: str, dv: float) -> None:
     h = st.setdefault("hormones", {x: y["base"] for x, y in HORMONES.items()})
     ph = _horm_phase(st)
     hp = _econf()["horm_phase_share"]
+    # 受体敏感度：同一根激素连着被喂，响得一次比一次轻。八维早有耐受，激素以前是满档直加。
+    sens = float(_hsens_state(st).get(k, 1.0))
+    dv = float(dv) * sens
+    _hsens_fire(st, k, dv)
     if k == "cortisol":
         t = float(st.get("_cort_target", HORMONES["cortisol"]["base"])) + dv * (1 - hp)
         st["_cort_target"] = round(_h_clamp(t), 2)
@@ -695,6 +736,7 @@ def show() -> dict:
         "unresolved": len(st["unresolved"]),
         "affection": st["affection"]["level"],
         "history": st["history"][-8:],
+        "hormone_sens": {k: round(float(v), 3) for k, v in _hsens_state(st).items()},
         "source": "engine",
         "stale": False,
         "at": st["at"],
